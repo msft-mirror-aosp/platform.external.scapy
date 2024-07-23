@@ -34,6 +34,7 @@ license {
 python_library {
     name: "scapy",
     srcs: [
-       "scapy/**/*.py",
+        "scapy/**/*.py",
     ],
+    host_supported: true,
 }
