@@ -1,7 +1,7 @@
-## This file is part of Scapy
-## See http://www.secdev.org/projects/scapy for more informations
-## Copyright (C) Philippe Biondi <phil@secdev.org>
-## This program is published under a GPLv2 license
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) Philippe Biondi <phil@secdev.org>
 
 """
 Convert IPv6 addresses between textual representation and binary.
@@ -10,17 +10,20 @@ These functions are missing when python is compiled
 without IPv6 support, on Windows for instance.
 """
 
-from __future__ import absolute_import
 import socket
 import re
 import binascii
-from scapy.modules.six.moves import range
-from scapy.compat import *
+from scapy.compat import plain_str, hex_bytes, bytes_encode, bytes_hex
+
+# Typing imports
+from typing import Union
 
 _IP6_ZEROS = re.compile('(?::|^)(0(?::0)+)(?::|$)')
 _INET6_PTON_EXC = socket.error("illegal IP address string passed to inet_pton")
 
+
 def _inet6_pton(addr):
+    # type: (str) -> bytes
     """Convert an IPv6 address from text representation into binary form,
 used when socket.inet_pton is not available.
 
@@ -64,8 +67,8 @@ used when socket.inet_pton is not available.
     if joker_pos is not None:
         if len(result) == 16:
             raise _INET6_PTON_EXC
-        result = (result[:joker_pos] + b"\x00" * (16 - len(result))
-                  + result[joker_pos:])
+        result = (result[:joker_pos] + b"\x00" * (16 - len(result)) +
+                  result[joker_pos:])
     if len(result) != 16:
         raise _INET6_PTON_EXC
     return result
@@ -78,11 +81,14 @@ _INET_PTON = {
 
 
 def inet_pton(af, addr):
+    # type: (socket.AddressFamily, Union[bytes, str]) -> bytes
     """Convert an IP address from text representation into binary form."""
     # Will replace Net/Net6 objects
     addr = plain_str(addr)
     # Use inet_pton if available
     try:
+        if not socket.has_ipv6:
+            raise AttributeError
         return socket.inet_pton(af, addr)
     except AttributeError:
         try:
@@ -92,6 +98,7 @@ def inet_pton(af, addr):
 
 
 def _inet6_ntop(addr):
+    # type: (bytes) -> str
     """Convert an IPv6 address from binary form into text representation,
 used when socket.inet_pton is not available.
 
@@ -101,7 +108,7 @@ used when socket.inet_pton is not available.
         raise ValueError("invalid length of packed IP address string")
 
     # Decode to hex representation
-    address = ":".join(bytes_hex(addr[idx:idx + 2]).decode().lstrip('0') or '0'
+    address = ":".join(plain_str(bytes_hex(addr[idx:idx + 2])).lstrip('0') or '0'  # noqa: E501
                        for idx in range(0, 16, 2))
 
     try:
@@ -124,10 +131,13 @@ _INET_NTOP = {
 
 
 def inet_ntop(af, addr):
+    # type: (socket.AddressFamily, bytes) -> str
     """Convert an IP address from binary form into text representation."""
     # Use inet_ntop if available
-    addr = raw(addr)
+    addr = bytes_encode(addr)
     try:
+        if not socket.has_ipv6:
+            raise AttributeError
         return socket.inet_ntop(af, addr)
     except AttributeError:
         try:

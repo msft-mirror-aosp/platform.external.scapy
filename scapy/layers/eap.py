@@ -1,22 +1,44 @@
-## This file is part of Scapy
-## See http://www.secdev.org/projects/scapy for more informations
-## Copyright (C) Philippe Biondi <phil@secdev.org>
-## This program is published under a GPLv2 license
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) Philippe Biondi <phil@secdev.org>
 
 """
-Classes related to the EAP protocol.
+Extensible Authentication Protocol (EAP)
 """
 
-from __future__ import absolute_import
-from __future__ import print_function
 
 import struct
 
-from scapy.fields import BitField, ByteField, XByteField, ByteEnumField,\
-ShortField, IntField, XIntField, ByteEnumField, StrLenField, XStrField,\
-XStrLenField, XStrFixedLenField, LenField, FieldLenField, PacketField,\
-PacketListField, ConditionalField, PadField
-from scapy.packet import Packet, bind_layers
+from scapy.fields import (
+    BitEnumField,
+    BitField,
+    ByteEnumField,
+    ByteField,
+    ConditionalField,
+    FieldLenField,
+    FieldListField,
+    IntField,
+    LenField,
+    LongField,
+    PacketField,
+    PacketListField,
+    PadField,
+    ShortField,
+    StrLenField,
+    XByteField,
+    XIntField,
+    XStrField,
+    XStrFixedLenField,
+    XStrLenField,
+)
+from scapy.packet import (
+    Packet,
+    Padding,
+    bind_bottom_up,
+    bind_layers,
+    bind_top_down,
+)
 from scapy.layers.l2 import SourceMACField, Ether, CookedLinux, GRE, SNAP
 from scapy.config import conf
 from scapy.compat import orb, chb
@@ -25,11 +47,11 @@ from scapy.compat import orb, chb
 # EAPOL
 #
 
-#________________________________________________________________________
+#########################################################################
 #
 # EAPOL protocol version
 # IEEE Std 802.1X-2010 - Section 11.3.1
-#________________________________________________________________________
+#########################################################################
 #
 
 eapol_versions = {
@@ -38,11 +60,11 @@ eapol_versions = {
     0x3: "802.1X-2010",
 }
 
-#________________________________________________________________________
+#########################################################################
 #
 # EAPOL Packet Types
 # IEEE Std 802.1X-2010 - Table 11.3
-#________________________________________________________________________
+#########################################################################
 #
 
 eapol_types = {
@@ -77,8 +99,8 @@ class EAPOL(Packet):
     ASF = 4
 
     def extract_padding(self, s):
-        l = self.len
-        return s[:l], s[l:]
+        tmp_len = self.len
+        return s[:tmp_len], s[tmp_len:]
 
     def hashret(self):
         return chb(self.type) + self.payload.hashret()
@@ -86,7 +108,7 @@ class EAPOL(Packet):
     def answers(self, other):
         if isinstance(other, EAPOL):
             if ((self.type == self.EAP_PACKET) and
-               (other.type == self.EAP_PACKET)):
+                    (other.type == self.EAP_PACKET)):
                 return self.payload.answers(other.payload)
         return 0
 
@@ -99,80 +121,80 @@ class EAPOL(Packet):
 #
 
 
-#________________________________________________________________________
+#########################################################################
 #
 # EAP methods types
 # http://www.iana.org/assignments/eap-numbers/eap-numbers.xhtml#eap-numbers-4
-#________________________________________________________________________
+#########################################################################
 #
 
 eap_types = {
-    0:   "Reserved",
-    1:   "Identity",
-    2:   "Notification",
-    3:   "Legacy Nak",
-    4:   "MD5-Challenge",
-    5:   "One-Time Password (OTP)",
-    6:   "Generic Token Card (GTC)",
-    7:   "Allocated - RFC3748",
-    8:   "Allocated - RFC3748",
-    9:   "RSA Public Key Authentication",
-    10:  "DSS Unilateral",
-    11:  "KEA",
-    12:  "KEA-VALIDATE",
-    13:  "EAP-TLS",
-    14:  "Defender Token (AXENT)",
-    15:  "RSA Security SecurID EAP",
-    16:  "Arcot Systems EAP",
-    17:  "EAP-Cisco Wireless",
-    18:  "GSM Subscriber Identity Modules (EAP-SIM)",
-    19:  "SRP-SHA1",
-    20:  "Unassigned",
-    21:  "EAP-TTLS",
-    22:  "Remote Access Service",
-    23:  "EAP-AKA Authentication",
-    24:  "EAP-3Com Wireless",
-    25:  "PEAP",
-    26:  "MS-EAP-Authentication",
-    27:  "Mutual Authentication w/Key Exchange (MAKE)",
-    28:  "CRYPTOCard",
-    29:  "EAP-MSCHAP-V2",
-    30:  "DynamID",
-    31:  "Rob EAP",
-    32:  "Protected One-Time Password",
-    33:  "MS-Authentication-TLV",
-    34:  "SentriNET",
-    35:  "EAP-Actiontec Wireless",
-    36:  "Cogent Systems Biometrics Authentication EAP",
-    37:  "AirFortress EAP",
-    38:  "EAP-HTTP Digest",
-    39:  "SecureSuite EAP",
-    40:  "DeviceConnect EAP",
-    41:  "EAP-SPEKE",
-    42:  "EAP-MOBAC",
-    43:  "EAP-FAST",
-    44:  "ZoneLabs EAP (ZLXEAP)",
-    45:  "EAP-Link",
-    46:  "EAP-PAX",
-    47:  "EAP-PSK",
-    48:  "EAP-SAKE",
-    49:  "EAP-IKEv2",
-    50:  "EAP-AKA",
-    51:  "EAP-GPSK",
-    52:  "EAP-pwd",
-    53:  "EAP-EKE Version 1",
-    54:  "EAP Method Type for PT-EAP",
-    55:  "TEAP",
+    0: "Reserved",
+    1: "Identity",
+    2: "Notification",
+    3: "Legacy Nak",
+    4: "MD5-Challenge",
+    5: "One-Time Password (OTP)",
+    6: "Generic Token Card (GTC)",
+    7: "Allocated - RFC3748",
+    8: "Allocated - RFC3748",
+    9: "RSA Public Key Authentication",
+    10: "DSS Unilateral",
+    11: "KEA",
+    12: "KEA-VALIDATE",
+    13: "EAP-TLS",
+    14: "Defender Token (AXENT)",
+    15: "RSA Security SecurID EAP",
+    16: "Arcot Systems EAP",
+    17: "EAP-Cisco Wireless",
+    18: "GSM Subscriber Identity Modules (EAP-SIM)",
+    19: "SRP-SHA1",
+    20: "Unassigned",
+    21: "EAP-TTLS",
+    22: "Remote Access Service",
+    23: "EAP-AKA Authentication",
+    24: "EAP-3Com Wireless",
+    25: "PEAP",
+    26: "MS-EAP-Authentication",
+    27: "Mutual Authentication w/Key Exchange (MAKE)",
+    28: "CRYPTOCard",
+    29: "EAP-MSCHAP-V2",
+    30: "DynamID",
+    31: "Rob EAP",
+    32: "Protected One-Time Password",
+    33: "MS-Authentication-TLV",
+    34: "SentriNET",
+    35: "EAP-Actiontec Wireless",
+    36: "Cogent Systems Biometrics Authentication EAP",
+    37: "AirFortress EAP",
+    38: "EAP-HTTP Digest",
+    39: "SecureSuite EAP",
+    40: "DeviceConnect EAP",
+    41: "EAP-SPEKE",
+    42: "EAP-MOBAC",
+    43: "EAP-FAST",
+    44: "ZoneLabs EAP (ZLXEAP)",
+    45: "EAP-Link",
+    46: "EAP-PAX",
+    47: "EAP-PSK",
+    48: "EAP-SAKE",
+    49: "EAP-IKEv2",
+    50: "EAP-AKA",
+    51: "EAP-GPSK",
+    52: "EAP-pwd",
+    53: "EAP-EKE Version 1",
+    54: "EAP Method Type for PT-EAP",
+    55: "TEAP",
     254: "Reserved for the Expanded Type",
     255: "Experimental",
 }
 
 
-#________________________________________________________________________
+#########################################################################
 #
 # EAP codes
 # http://www.iana.org/assignments/eap-numbers/eap-numbers.xhtml#eap-numbers-1
-#________________________________________________________________________
+#########################################################################
 #
 
 eap_codes = {
@@ -198,21 +220,24 @@ class EAP(Packet):
         ConditionalField(ByteEnumField("type", 0, eap_types),
                          lambda pkt:pkt.code not in [
                              EAP.SUCCESS, EAP.FAILURE]),
-        ConditionalField(ByteEnumField("desired_auth_type", 0, eap_types),
-                         lambda pkt:pkt.code == EAP.RESPONSE and pkt.type == 3),
+        ConditionalField(
+            FieldListField("desired_auth_types", [],
+                           ByteEnumField("auth_type", 0, eap_types),
+                           length_from=lambda pkt: pkt.len - 4),
+            lambda pkt:pkt.code == EAP.RESPONSE and pkt.type == 3),
         ConditionalField(
             StrLenField("identity", '', length_from=lambda pkt: pkt.len - 5),
-                         lambda pkt: pkt.code == EAP.RESPONSE and hasattr(pkt, 'type') and pkt.type == 1),
+            lambda pkt: pkt.code == EAP.RESPONSE and hasattr(pkt, 'type') and pkt.type == 1),  # noqa: E501
         ConditionalField(
             StrLenField("message", '', length_from=lambda pkt: pkt.len - 5),
-                         lambda pkt: pkt.code == EAP.REQUEST and hasattr(pkt, 'type') and pkt.type == 1)
+            lambda pkt: pkt.code == EAP.REQUEST and hasattr(pkt, 'type') and pkt.type == 1)  # noqa: E501
     ]
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # EAP codes
     # http://www.iana.org/assignments/eap-numbers/eap-numbers.xhtml#eap-numbers-1
-    #________________________________________________________________________
+    #########################################################################
     #
 
     REQUEST = 1
@@ -237,26 +262,13 @@ class EAP(Packet):
                 return cls.registered_methods.get(t, cls)
         return cls
 
-    def haslayer(self, cls):
-        if cls == "EAP":
-            if isinstance(self, EAP):
-                return True
-        elif issubclass(cls, EAP):
-            if isinstance(self, cls):
-                return True
-        return super(EAP, self).haslayer(cls)
-
-    def getlayer(self, cls, nb=1, _track=None, _subclass=True, **flt):
-        return super(EAP, self).getlayer(cls, nb=nb, _track=_track,
-                                         _subclass=True, **flt)
-
     def answers(self, other):
         if isinstance(other, EAP):
             if self.code == self.REQUEST:
                 return 0
             elif self.code == self.RESPONSE:
                 if ((other.code == self.REQUEST) and
-                   (other.type == self.type)):
+                        (other.type == self.type)):
                     return 1
             elif other.code == self.RESPONSE:
                 return 1
@@ -264,19 +276,23 @@ class EAP(Packet):
 
     def mysummary(self):
         summary_str = "EAP %{eap_class}.code% %{eap_class}.type%".format(
-            eap_class = self.__class__.__name__
+            eap_class=self.__class__.__name__
         )
         if self.type == 1 and self.code == EAP.RESPONSE:
             summary_str += " %{eap_class}.identity%".format(
-                eap_class = self.__class__.__name__
+                eap_class=self.__class__.__name__
             )
         return self.sprintf(summary_str)
 
     def post_build(self, p, pay):
         if self.len is None:
-            l = len(p) + len(pay)
-            p = p[:2] + chb((l >> 8) & 0xff) + chb(l & 0xff) + p[4:]
+            tmp_len = len(p) + len(pay)
+            tmp_p = p[:2] + chb((tmp_len >> 8) & 0xff) + chb(tmp_len & 0xff)
+            p = tmp_p + p[4:]
         return p + pay
+
+    def guess_payload_class(self, _):
+        return Padding
 
 
 class EAP_MD5(EAP):
@@ -285,6 +301,7 @@ class EAP_MD5(EAP):
     """
 
     name = "EAP-MD5"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 1, eap_codes),
         ByteField("id", 0),
@@ -293,7 +310,7 @@ class EAP_MD5(EAP):
         ByteEnumField("type", 4, eap_types),
         FieldLenField("value_size", None, fmt="B", length_of="value"),
         XStrLenField("value", '', length_from=lambda p: p.value_size),
-        XStrLenField("optional_name", '', length_from=lambda p: 0 if p.len is None or p.value_size is None else (p.len - p.value_size - 6))
+        XStrLenField("optional_name", '', length_from=lambda p: 0 if p.len is None or p.value_size is None else (p.len - p.value_size - 6))  # noqa: E501
     ]
 
 
@@ -303,6 +320,7 @@ class EAP_TLS(EAP):
     """
 
     name = "EAP-TLS"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 1, eap_codes),
         ByteField("id", 0),
@@ -313,8 +331,8 @@ class EAP_TLS(EAP):
         BitField('M', 0, 1),
         BitField('S', 0, 1),
         BitField('reserved', 0, 5),
-        ConditionalField(IntField('tls_message_len', 0), lambda pkt: pkt.L == 1),
-        XStrLenField('tls_data', '', length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))
+        ConditionalField(IntField('tls_message_len', 0), lambda pkt: pkt.L == 1),  # noqa: E501
+        XStrLenField('tls_data', '', length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))  # noqa: E501
     ]
 
 
@@ -325,6 +343,7 @@ class EAP_TTLS(EAP):
     """
 
     name = "EAP-TTLS"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 1, eap_codes),
         ByteField("id", 0),
@@ -337,7 +356,30 @@ class EAP_TTLS(EAP):
         BitField("reserved", 0, 2),
         BitField("version", 0, 3),
         ConditionalField(IntField("message_len", 0), lambda pkt: pkt.L == 1),
-        XStrLenField("data", "", length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))
+        XStrLenField("data", "", length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))  # noqa: E501
+    ]
+
+
+class EAP_PEAP(EAP):
+    """
+    draft-josefsson-pppext-eap-tls-eap-05.txt - "Protected EAP Protocol (PEAP)"
+    """
+
+    name = "PEAP"
+    match_subclass = True
+    fields_desc = [
+        ByteEnumField("code", 1, eap_codes),
+        ByteField("id", 0),
+        FieldLenField("len", None, fmt="H", length_of="tls_data",
+                      adjust=lambda p, x: x + 10 if p.L == 1 else x + 6),
+        ByteEnumField("type", 25, eap_types),
+        BitField("L", 0, 1),
+        BitField("M", 0, 1),
+        BitField("S", 0, 1),
+        BitField("reserved", 0, 3),
+        BitField("version", 1, 2),
+        ConditionalField(IntField("tls_message_len", 0), lambda pkt: pkt.L == 1),  # noqa: E501
+        XStrLenField("tls_data", "", length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))  # noqa: E501
     ]
 
 
@@ -348,6 +390,7 @@ class EAP_FAST(EAP):
     """
 
     name = "EAP-FAST"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 1, eap_codes),
         ByteField("id", 0),
@@ -360,7 +403,7 @@ class EAP_FAST(EAP):
         BitField('reserved', 0, 2),
         BitField('version', 0, 3),
         ConditionalField(IntField('message_len', 0), lambda pkt: pkt.L == 1),
-        XStrLenField('data', '', length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))
+        XStrLenField('data', '', length_from=lambda pkt: 0 if pkt.len is None else pkt.len - (6 + 4 * pkt.L))  # noqa: E501
     ]
 
 
@@ -371,6 +414,7 @@ class LEAP(EAP):
     """
 
     name = "Cisco LEAP"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 1, eap_codes),
         ByteField("id", 0),
@@ -378,41 +422,118 @@ class LEAP(EAP):
         ByteEnumField("type", 17, eap_types),
         ByteField('version', 1),
         XByteField('unused', 0),
-        FieldLenField("count", None, "challenge_response", "B", adjust=lambda p, x: len(p.challenge_response)),
-        XStrLenField("challenge_response", "", length_from=lambda p: 0 or p.count),
-        StrLenField("username", "", length_from=lambda p: p.len - (8 + (0 or p.count)))
+        FieldLenField("count", None, "challenge_response", "B", adjust=lambda p, x: len(p.challenge_response)),  # noqa: E501
+        XStrLenField("challenge_response", "", length_from=lambda p: 0 or p.count),  # noqa: E501
+        StrLenField("username", "", length_from=lambda p: p.len - (8 + (0 or p.count)))  # noqa: E501
     ]
 
 
 #############################################################################
-##### IEEE 802.1X-2010 - MACsec Key Agreement (MKA) protocol
+# IEEE 802.1X-2010 - EAPOL-Key
 #############################################################################
 
-#________________________________________________________________________
+# sect 11.9 of 802.1X-2010
+# AND sect 12.7.2 of 802.11-2016
+
+
+class EAPOL_KEY(Packet):
+    name = "EAPOL_KEY"
+    deprecated_fields = {
+        "key": ("key_data", "2.6.0"),
+        "len": ("key_length", "2.6.0"),
+    }
+    fields_desc = [
+        ByteEnumField("key_descriptor_type", 1, {1: "RC4", 2: "RSN"}),
+        # Key Information
+        BitField("res2", 0, 2),
+        BitField("smk_message", 0, 1),
+        BitField("encrypted_key_data", 0, 1),
+        BitField("request", 0, 1),
+        BitField("error", 0, 1),
+        BitField("secure", 0, 1),
+        BitField("has_key_mic", 1, 1),
+        BitField("key_ack", 0, 1),
+        BitField("install", 0, 1),
+        BitField("res", 0, 2),
+        BitEnumField("key_type", 0, 1, {0: "Group/SMK", 1: "Pairwise"}),
+        BitEnumField("key_descriptor_type_version", 0, 3, {
+            1: "HMAC-MD5+ARC4",
+            2: "HMAC-SHA1-128+AES-128",
+            3: "AES-128-CMAC+AES-128",
+        }),
+        #
+        LenField("key_length", None, "H"),
+        LongField("key_replay_counter", 0),
+        XStrFixedLenField("key_nonce", "", 32),
+        XStrFixedLenField("key_iv", "", 16),
+        XStrFixedLenField("key_rsc", "", 8),
+        XStrFixedLenField("key_id", "", 8),
+        XStrFixedLenField("key_mic", "", 16),  # XXX size can be 24
+        FieldLenField("key_data_length", None, length_of="key_data"),
+        XStrLenField("key_data", "",
+                     length_from=lambda pkt: pkt.key_data_length)
+    ]
+
+    def extract_padding(self, s):
+        return s[:self.key_length], s[self.key_length:]
+
+    def hashret(self):
+        return struct.pack("!B", self.type) + self.payload.hashret()
+
+    def answers(self, other):
+        if isinstance(other, EAPOL_KEY) and \
+                other.descriptor_type == self.descriptor_type:
+            return 1
+        return 0
+
+    def guess_key_number(self):
+        """
+        Determines 4-way handshake key number
+
+        :return: key number (1-4), or 0 if it cannot be determined
+        """
+        if self.key_type == 1:
+            if self.key_ack == 1:
+                if self.key_mic == 0:
+                    return 1
+                if self.install == 1:
+                    return 3
+            else:
+                if self.secure == 0:
+                    return 2
+                return 4
+        return 0
+
+
+#############################################################################
+# IEEE 802.1X-2010 - MACsec Key Agreement (MKA) protocol
+#############################################################################
+
+#########################################################################
 #
 # IEEE 802.1X-2010 standard
 # Section 11.11.1
-#________________________________________________________________________
+#########################################################################
 #
 
 _parameter_set_types = {
-    1:   "Live Peer List",
-    2:   "Potential Peer List",
-    3:   "MACsec SAK Use",
-    4:   "Distributed SAK",
-    5:   "Distributed CAK",
-    6:   "KMD",
-    7:   "Announcement",
+    1: "Live Peer List",
+    2: "Potential Peer List",
+    3: "MACsec SAK Use",
+    4: "Distributed SAK",
+    5: "Distributed CAK",
+    6: "KMD",
+    7: "Announcement",
     255: "ICV Indicator"
 }
 
 
 # Used by MKAParamSet::dispatch_hook() to instantiate the appropriate class
 _param_set_cls = {
-    1:   "MKALivePeerListParamSet",
-    2:   "MKAPotentialPeerListParamSet",
-    3:   "MKASAKUseParamSet",
-    4:   "MKADistributedSAKParamSet",
+    1: "MKALivePeerListParamSet",
+    2: "MKAPotentialPeerListParamSet",
+    3: "MKASAKUseParamSet",
+    4: "MKADistributedSAKParamSet",
     255: "MKAICVSet",
 }
 
@@ -422,11 +543,11 @@ class MACsecSCI(Packet):
     Secure Channel Identifier.
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1AE-2006 standard
     # Section 9.9
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "SCI"
@@ -468,11 +589,11 @@ class MKABasicParamSet(Packet):
     Basic Parameter Set (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "Basic Parameter Set"
@@ -504,7 +625,7 @@ class MKABasicParamSet(Packet):
 
 class MKAPeerListTuple(Packet):
     """
-    Live / Potential Peer List parameter sets tuples (802.1X-2010, section 11.11).
+    Live / Potential Peer List parameter sets tuples (802.1X-2010, section 11.11).  # noqa: E501
     """
 
     name = "Peer List Tuple"
@@ -519,11 +640,11 @@ class MKALivePeerListParamSet(MKAParamSet):
     Live Peer List parameter sets (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "Live Peer List Parameter Set"
@@ -547,11 +668,11 @@ class MKAPotentialPeerListParamSet(MKAParamSet):
     Potential Peer List parameter sets (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "Potential Peer List Parameter Set"
@@ -575,11 +696,11 @@ class MKASAKUseParamSet(MKAParamSet):
     SAK Use Parameter Set (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "SAK Use Parameter Set"
@@ -610,11 +731,11 @@ class MKADistributedSAKParamSet(MKAParamSet):
     Distributed SAK parameter set (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "Distributed SAK parameter set"
@@ -642,11 +763,11 @@ class MKADistributedCAKParamSet(MKAParamSet):
     Distributed CAK Parameter Set (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "Distributed CAK parameter set"
@@ -675,11 +796,11 @@ class MKAICVSet(MKAParamSet):
     ICV (802.1X-2010, section 11.11).
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "ICV"
@@ -728,11 +849,11 @@ class MKAPDU(Packet):
     MACsec Key Agreement Protocol Data Unit.
     """
 
-    #________________________________________________________________________
+    #########################################################################
     #
     # IEEE 802.1X-2010 standard
     # Section 11.11
-    #________________________________________________________________________
+    #########################################################################
     #
 
     name = "MKPDU"
@@ -745,11 +866,14 @@ class MKAPDU(Packet):
         return "", s
 
 
-bind_layers( Ether,         EAPOL,         type=34958)
-bind_layers( Ether,         EAPOL,         dst='01:80:c2:00:00:03', type=34958)
-bind_layers( CookedLinux,   EAPOL,         proto=34958)
-bind_layers( GRE,           EAPOL,         proto=34958)
-bind_layers( EAPOL,         EAP,           type=0)
-bind_layers( SNAP,          EAPOL,         code=34958)
-bind_layers( EAPOL,         MKAPDU,        type=5)
+# Bind EAPOL types
+bind_layers(EAPOL, EAP, type=0)
+bind_layers(EAPOL, EAPOL_KEY, type=3)
+bind_layers(EAPOL, MKAPDU, type=5)
 
+bind_bottom_up(Ether, EAPOL, type=0x888e)
+# the reserved IEEE Std 802.1X PAE address
+bind_top_down(Ether, EAPOL, dst='01:80:c2:00:00:03', type=0x888e)
+bind_layers(CookedLinux, EAPOL, proto=0x888e)
+bind_layers(SNAP, EAPOL, code=0x888e)
+bind_layers(GRE, EAPOL, proto=0x888e)

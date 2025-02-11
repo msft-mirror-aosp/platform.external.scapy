@@ -1,21 +1,6 @@
-#! /usr/bin/env python
-
-# This file is part of Scapy.
-# See http://www.secdev.org/projects/scapy for more information.
-#
-# Scapy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 2 of the License, or
-# (at your option) any later version.
-#
-# Scapy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with Scapy.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: GPL-2.0-or-later
+# This file is part of Scapy
+# See https://scapy.net/ for more information
 # Copyright (C) 2016 Anmol Sarma <me@anmolsarma.in>
 
 # scapy.contrib.description = Constrained Application Protocol (CoAP)
@@ -25,9 +10,12 @@
 RFC 7252 - Constrained Application Protocol (CoAP) layer for Scapy
 """
 
-from scapy.fields import *
+import struct
+
+from scapy.fields import BitEnumField, BitField, BitFieldLenField, \
+    ByteEnumField, ShortField, StrField, StrLenField
 from scapy.layers.inet import UDP
-from scapy.packet import *
+from scapy.packet import Packet, bind_layers
 from scapy.error import warning
 from scapy.compat import raw
 
@@ -62,39 +50,39 @@ coap_codes = {
     165: "Proxying Not Supported"}
 
 coap_options = ({
-                    1: "If-Match",
-                    3: "Uri-Host",
-                    4: "ETag",
-                    5: "If-None-Match",
-                    7: "Uri-Port",
-                    8: "Location-Path",
-                    11: "Uri-Path",
-                    12: "Content-Format",
-                    14: "Max-Age",
-                    15: "Uri-Query",
-                    17: "Accept",
-                    20: "Location-Query",
-                    35: "Proxy-Uri",
-                    39: "Proxy-Scheme",
-                    60: "Size1"
-                },
-                {
-                    "If-Match": 1,
-                    "Uri-Host": 3,
-                    "ETag": 4,
-                    "If-None-Match": 5,
-                    "Uri-Port": 7,
-                    "Location-Path": 8,
-                    "Uri-Path": 11,
-                    "Content-Format": 12,
-                    "Max-Age": 14,
-                    "Uri-Query": 15,
-                    "Accept": 17,
-                    "Location-Query": 20,
-                    "Proxy-Uri": 35,
-                    "Proxy-Scheme": 39,
-                    "Size1": 60
-                })
+    1: "If-Match",
+    3: "Uri-Host",
+    4: "ETag",
+    5: "If-None-Match",
+    7: "Uri-Port",
+    8: "Location-Path",
+    11: "Uri-Path",
+    12: "Content-Format",
+    14: "Max-Age",
+    15: "Uri-Query",
+    17: "Accept",
+    20: "Location-Query",
+    35: "Proxy-Uri",
+    39: "Proxy-Scheme",
+    60: "Size1"
+},
+    {
+    "If-Match": 1,
+    "Uri-Host": 3,
+    "ETag": 4,
+    "If-None-Match": 5,
+    "Uri-Port": 7,
+    "Location-Path": 8,
+    "Uri-Path": 11,
+    "Content-Format": 12,
+    "Max-Age": 14,
+    "Uri-Query": 15,
+    "Accept": 17,
+    "Location-Query": 20,
+    "Proxy-Uri": 35,
+    "Proxy-Scheme": 39,
+    "Size1": 60
+})
 
 
 def _get_ext_field_size(val):
@@ -119,7 +107,7 @@ def _get_abs_val(val, ext_val):
     if val >= 15:
         warning("Invalid Option Length or Delta %d" % val)
     if val == 14:
-        return 269 + struct.unpack('H', ext_val)[0]
+        return 269 + struct.unpack('!H', ext_val)[0]
     if val == 13:
         return 13 + struct.unpack('B', ext_val)[0]
     return val
@@ -132,14 +120,14 @@ def _get_opt_val_size(pkt):
 class _CoAPOpt(Packet):
     fields_desc = [BitField("delta", 0, 4),
                    BitField("len", 0, 4),
-                   StrLenField("delta_ext", None, length_from=_get_delta_ext_size),
-                   StrLenField("len_ext", None, length_from=_get_len_ext_size),
-                   StrLenField("opt_val", None, length_from=_get_opt_val_size)]
+                   StrLenField("delta_ext", "", length_from=_get_delta_ext_size),  # noqa: E501
+                   StrLenField("len_ext", "", length_from=_get_len_ext_size),
+                   StrLenField("opt_val", "", length_from=_get_opt_val_size)]
 
     @staticmethod
     def _populate_extended(val):
         if val >= 269:
-            return struct.pack('H', val - 269), 14
+            return struct.pack('!H', val - 269), 14
         if val >= 13:
             return struct.pack('B', val - 13), 13
         return None, val
@@ -161,7 +149,7 @@ class _CoAPOptsField(StrField):
     islist = 1
 
     def i2h(self, pkt, x):
-        return [(coap_options[0][o[0]], o[1]) if o[0] in coap_options[0] else o for o in x]
+        return [(coap_options[0][o[0]], o[1]) if o[0] in coap_options[0] else o for o in x]  # noqa: E501
 
     # consume only the coap layer from the wire string
     def getfield(self, pkt, s):
@@ -169,7 +157,7 @@ class _CoAPOptsField(StrField):
         used = 0
         for o in opts:
             used += o[0]
-        return s[used:], [ (o[1], o[2]) for o in opts ]
+        return s[used:], [(o[1], o[2]) for o in opts]
 
     def m2i(self, pkt, x):
         opts = []
@@ -192,7 +180,7 @@ class _CoAPOptsField(StrField):
                 opt_lst.append((coap_options[1][o[0]], o[1]))
             else:
                 opt_lst.append(o)
-        opt_lst.sort(key=lambda o:o[0])
+        opt_lst.sort(key=lambda o: o[0])
 
         opts = _CoAPOpt(delta=opt_lst[0][0], opt_val=opt_lst[0][1])
         high_opt = opt_lst[0][0]
@@ -201,6 +189,7 @@ class _CoAPOptsField(StrField):
             high_opt = o[0]
 
         return raw(opts)
+
 
 class _CoAPPaymark(StrField):
 
@@ -214,7 +203,7 @@ class _CoAPPaymark(StrField):
     def m2i(self, pkt, x):
         if len(x) > 0 and x[:1] == b"\xff":
             return 1, b'\xff'
-        return 0, b'';
+        return 0, b''
 
     def i2m(self, pkt, x):
         return x
@@ -225,7 +214,7 @@ class CoAP(Packet):
     name = "CoAP"
 
     fields_desc = [BitField("ver", 1, 2),
-                   BitEnumField("type", 0, 2, {0: "CON", 1: "NON", 2: "ACK", 3: "RST"}),
+                   BitEnumField("type", 0, 2, {0: "CON", 1: "NON", 2: "ACK", 3: "RST"}),  # noqa: E501
                    BitFieldLenField("tkl", None, 4, length_of='token'),
                    ByteEnumField("code", 0, coap_codes),
                    ShortField("msg_id", 0),
@@ -245,6 +234,7 @@ class CoAP(Packet):
             if k[0] == "Content-Format":
                 self.content_format = k[1]
         return pay
+
 
 bind_layers(UDP, CoAP, sport=5683)
 bind_layers(UDP, CoAP, dport=5683)
