@@ -1,23 +1,30 @@
-## This file is part of Scapy
-## Copyright (C) 2007, 2008, 2009 Arnaud Ebalard
-##               2015, 2016, 2017 Maxence Tury
-## This program is published under a GPLv2 license
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) 2007, 2008, 2009 Arnaud Ebalard
+#               2015, 2016, 2017 Maxence Tury
 
 """
 Stream ciphers.
 """
 
-from __future__ import absolute_import
 from scapy.config import conf
-from scapy.layers.tls.crypto.ciphers import CipherError
-import scapy.modules.six as six
+from scapy.layers.tls.crypto.common import CipherError
 
 if conf.crypto_valid:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
     from cryptography.hazmat.backends import default_backend
+    try:
+        # cryptography > 43.0
+        from cryptography.hazmat.decrepit.ciphers import (
+            algorithms as decrepit_algorithms,
+        )
+    except ImportError:
+        decrepit_algorithms = algorithms
 
 
 _tls_stream_cipher_algs = {}
+
 
 class _StreamCipherMetaclass(type):
     """
@@ -34,7 +41,7 @@ class _StreamCipherMetaclass(type):
         return the_class
 
 
-class _StreamCipher(six.with_metaclass(_StreamCipherMetaclass, object)):
+class _StreamCipher(metaclass=_StreamCipherMetaclass):
     type = "stream"
 
     def __init__(self, key=None):
@@ -50,10 +57,10 @@ class _StreamCipher(six.with_metaclass(_StreamCipherMetaclass, object)):
         if key is None:
             self.ready["key"] = False
             if hasattr(self, "expanded_key_len"):
-                l = self.expanded_key_len
+                tmp_len = self.expanded_key_len
             else:
-                l = self.key_len
-            key = b"\0" * l
+                tmp_len = self.key_len
+            key = b"\0" * tmp_len
 
         # we use super() in order to avoid any deadlock with __setattr__
         super(_StreamCipher, self).__setattr__("key", key)
@@ -79,15 +86,14 @@ class _StreamCipher(six.with_metaclass(_StreamCipherMetaclass, object)):
             self.ready["key"] = True
         super(_StreamCipher, self).__setattr__(name, val)
 
-
     def encrypt(self, data):
-        if False in six.itervalues(self.ready):
+        if False in self.ready.values():
             raise CipherError(data)
         self._enc_updated_with += data
         return self.encryptor.update(data)
 
     def decrypt(self, data):
-        if False in six.itervalues(self.ready):
+        if False in self.ready.values():
             raise CipherError(data)
         self._dec_updated_with += data
         return self.decryptor.update(data)
@@ -104,7 +110,7 @@ class _StreamCipher(six.with_metaclass(_StreamCipherMetaclass, object)):
 
 if conf.crypto_valid:
     class Cipher_RC4_128(_StreamCipher):
-        pc_cls = algorithms.ARC4
+        pc_cls = decrepit_algorithms.ARC4
         key_len = 16
 
     class Cipher_RC4_40(Cipher_RC4_128):
@@ -131,4 +137,3 @@ class Cipher_NULL(_StreamCipher):
 
     def decrypt(self, data):
         return data
-
