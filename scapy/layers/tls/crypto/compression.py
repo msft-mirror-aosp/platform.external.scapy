@@ -1,21 +1,21 @@
-## This file is part of Scapy
-## Copyright (C) 2007, 2008, 2009 Arnaud Ebalard
-##                     2015, 2016 Maxence Tury
-## This program is published under a GPLv2 license
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+# Copyright (C) 2007, 2008, 2009 Arnaud Ebalard
+#               2015, 2016 Maxence Tury
 
 """
 TLS compression.
 """
 
-from __future__ import absolute_import
 import zlib
 
 from scapy.error import warning
-import scapy.modules.six as six
 
 
 _tls_compression_algs = {}
 _tls_compression_algs_cls = {}
+
 
 class _GenericCompMetaclass(type):
     """
@@ -32,7 +32,7 @@ class _GenericCompMetaclass(type):
         return the_class
 
 
-class _GenericComp(six.with_metaclass(_GenericCompMetaclass, object)):
+class _GenericComp(metaclass=_GenericCompMetaclass):
     pass
 
 
@@ -48,6 +48,7 @@ class Comp_NULL(_GenericComp):
 
     def decompress(self, s):
         return s
+
 
 class Comp_Deflate(_GenericComp):
     """
@@ -68,6 +69,7 @@ class Comp_Deflate(_GenericComp):
         self.compress_state = zlib.compressobj()
         self.decompress_state = zlib.decompressobj()
 
+
 class Comp_LZS(_GenericComp):
     """
     Lempel-Zic-Stac (LZS) algorithm, specified for TLS by RFC 3943.
@@ -83,4 +85,3 @@ class Comp_LZS(_GenericComp):
     def decompress(self, s):
         warning("LZS Compression algorithm is not implemented yet")
         return s
-

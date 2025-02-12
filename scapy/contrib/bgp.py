@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # This file is part of Scapy
-# Scapy is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 2 of the License, or
-# any later version.
-#
-# Scapy is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with Scapy. If not, see <http://www.gnu.org/licenses/>.
+# See https://scapy.net/ for more information
 
 # scapy.contrib.description = BGP v0.1
 # scapy.contrib.status = loads
@@ -19,7 +9,6 @@
 BGP (Border Gateway Protocol).
 """
 
-from __future__ import absolute_import
 import struct
 import re
 import socket
@@ -36,9 +25,8 @@ from scapy.fields import (Field, BitField, BitEnumField, XBitField, ByteField,
 from scapy.layers.inet import TCP
 from scapy.layers.inet6 import IP6Field
 from scapy.config import conf, ConfClass
-from scapy.compat import *
+from scapy.compat import orb, chb
 from scapy.error import log_runtime
-import scapy.modules.six as six
 
 
 #
@@ -122,7 +110,7 @@ class BGPFieldIPv4(Field):
         return self.i2h(pkt, i)
 
     def i2len(self, pkt, i):
-        mask, ip = i
+        mask, _ = i
         return self.mask2iplen(mask) + 1
 
     def i2m(self, pkt, i):
@@ -142,7 +130,7 @@ class BGPFieldIPv4(Field):
     def m2i(self, pkt, m):
         mask = orb(m[0])
         mask2iplen_res = self.mask2iplen(mask)
-        ip = b"".join(m[i + 1:i + 2] if i < mask2iplen_res else b"\x00" for i in range(4))
+        ip = b"".join(m[i + 1:i + 2] if i < mask2iplen_res else b"\x00" for i in range(4))  # noqa: E501
         return (mask, socket.inet_ntoa(ip))
 
 
@@ -171,7 +159,7 @@ class BGPFieldIPv6(Field):
         return self.mask2iplen(mask) + 1
 
     def i2m(self, pkt, i):
-        """"Internal" (IP as bytes, mask as int) to "machine" representation."""
+        """"Internal" (IP as bytes, mask as int) to "machine" representation."""  # noqa: E501
         mask, ip = i
         ip = pton_ntop.inet_pton(socket.AF_INET6, ip)
         return struct.pack(">B", mask) + ip[:self.mask2iplen(mask)]
@@ -185,7 +173,7 @@ class BGPFieldIPv6(Field):
 
     def m2i(self, pkt, m):
         mask = orb(m[0])
-        ip = b"".join(m[i + 1:i + 2] if i < self.mask2iplen(mask) else b"\x00" for i in range(16))
+        ip = b"".join(m[i + 1:i + 2] if i < self.mask2iplen(mask) else b"\x00" for i in range(16))  # noqa: E501
         return (mask, pton_ntop.inet_ntop(socket.AF_INET6, ip))
 
 
@@ -198,56 +186,122 @@ def has_extended_length(flags):
     return flags & _BGP_PA_EXTENDED_LENGTH == _BGP_PA_EXTENDED_LENGTH
 
 
+def detect_add_path_prefix46(s, max_bit_length):
+    """
+    Detect IPv4/IPv6 prefixes conform to BGP Additional Path but NOT conform
+    to standard BGP..
+
+    This is an adapted version of wireshark's detect_add_path_prefix46
+    https://github.com/wireshark/wireshark/blob/ed9e958a2ed506220fdab320738f1f96a3c2ffbb/epan/dissectors/packet-bgp.c#L2905
+    Kudos to them !
+    """
+    # Must be compatible with BGP Additional Path
+    i = 0
+    while i + 4 < len(s):
+        i += 4
+        prefix_len = orb(s[i])
+        if prefix_len > max_bit_length:
+            return False
+        addr_len = (prefix_len + 7) // 8
+        i += 1 + addr_len
+        if i > len(s):
+            return False
+        if prefix_len % 8:
+            if orb(s[i - 1]) & (0xFF >> (prefix_len % 8)):
+                return False
+    # Must NOT be compatible with standard BGP
+    i = 0
+    while i + 4 < len(s):
+        prefix_len = orb(s[i])
+        if prefix_len == 0 and len(s) > 1:
+            return True
+        if prefix_len > max_bit_length:
+            return True
+        addr_len = (prefix_len + 7) // 8
+        i += 1 + addr_len
+        if i > len(s):
+            return True
+        if prefix_len % 8:
+            if orb(s[i - 1]) & (0xFF >> (prefix_len % 8)):
+                return True
+    return False
+
+
 class BGPNLRI_IPv4(Packet):
     """
     Packet handling IPv4 NLRI fields.
     """
-
     name = "IPv4 NLRI"
     fields_desc = [BGPFieldIPv4("prefix", "0.0.0.0/0")]
+
+    def default_payload_class(self, payload):
+        return conf.padding_layer
 
 
 class BGPNLRI_IPv6(Packet):
     """
     Packet handling IPv6 NLRI fields.
     """
-
     name = "IPv6 NLRI"
     fields_desc = [BGPFieldIPv6("prefix", "::/0")]
+
+    def default_payload_class(self, payload):
+        return conf.padding_layer
+
+
+class BGPNLRI_IPv4_AP(BGPNLRI_IPv4):
+    """
+    Packet handling IPv4 NLRI fields WITH BGP ADDITIONAL PATH
+    """
+
+    name = "IPv4 NLRI (Additional Path)"
+    fields_desc = [IntField("nlri_path_id", 0),
+                   BGPFieldIPv4("prefix", "0.0.0.0/0")]
+
+
+class BGPNLRI_IPv6_AP(BGPNLRI_IPv6):
+    """
+    Packet handling IPv6 NLRI fields WITH BGP ADDITIONAL PATH
+    """
+
+    name = "IPv6 NLRI (Additional Path)"
+    fields_desc = [IntField("nlri_path_id", 0),
+                   BGPFieldIPv6("prefix", "::/0")]
 
 
 class BGPNLRIPacketListField(PacketListField):
     """
     PacketListField handling NLRI fields.
     """
+    __slots__ = ["max_bit_length", "cls_group", "no_length"]
+
+    def __init__(self, name, default, ip_mode, **kwargs):
+        super(BGPNLRIPacketListField, self).__init__(
+            name, default, Packet, **kwargs
+        )
+        self.max_bit_length, self.cls_group = {
+            "IPv4": (32, [BGPNLRI_IPv4, BGPNLRI_IPv4_AP]),
+            "IPv6": (128, [BGPNLRI_IPv6, BGPNLRI_IPv6_AP]),
+        }[ip_mode]
+        self.no_length = "length_from" not in kwargs
 
     def getfield(self, pkt, s):
-        lst = []
-        length = None
-        ret = b""
-
-        if self.length_from is not None:
-            length = self.length_from(pkt)
-
-        if length is not None:
-            remain, ret = s[:length], s[length:]
-        else:
+        if self.no_length:
             index = s.find(_BGP_HEADER_MARKER)
+            if index == 0:
+                return s, []
             if index != -1:
-                remain = s[:index]
-                ret = s[index:]
-            else:
-                remain = s
+                self.length_from = lambda pkt: index
+        remain = s[:self.length_from(pkt)] if self.length_from else s
 
-        while remain:
-            mask_length_in_bits = orb(remain[0])
-            mask_length_in_bytes = (mask_length_in_bits + 7) // 8
-            current = remain[:mask_length_in_bytes + 1]
-            remain = remain[mask_length_in_bytes + 1:]
-            packet = self.m2i(pkt, current)
-            lst.append(packet)
-
-        return remain + ret, lst
+        cls = self.cls_group[
+            detect_add_path_prefix46(remain, self.max_bit_length)
+        ]
+        self.next_cls_cb = lambda *args: cls
+        res = super(BGPNLRIPacketListField, self).getfield(pkt, s)
+        if self.no_length:
+            self.length_from = None
+        return res
 
 
 class _BGPInvalidDataException(Exception):
@@ -340,13 +394,13 @@ address_family_identifiers = {
 
 subsequent_afis = {
     0: "Reserved",  # RFC 4760
-    1: "Network Layer Reachability Information used for unicast forwarding",  # RFC 4760
-    2: "Network Layer Reachability Information used for multicast forwarding",  # RFC 4760
+    1: "Network Layer Reachability Information used for unicast forwarding",  # RFC 4760  # noqa: E501
+    2: "Network Layer Reachability Information used for multicast forwarding",  # RFC 4760  # noqa: E501
     3: "Reserved",  # RFC 4760
-    4: "Network Layer Reachability Information (NLRI) with MPLS Labels",  # RFC 3107
+    4: "Network Layer Reachability Information (NLRI) with MPLS Labels",  # RFC 3107  # noqa: E501
     5: "MCAST-VPN",  # RFC 6514
     6: "Network Layer Reachability Information used for Dynamic Placement of\
-        Multi-Segment Pseudowires", # RFC 7267
+        Multi-Segment Pseudowires",  # RFC 7267
     7: "Encapsulation SAFI",  # RFC 5512
     8: "MCAST-VPLS",  # RFC 7117
     64: "Tunnel SAFI",  # DRAFT-NALAWADE-KAPOOR-TUNNEL-SAFI-01
@@ -359,7 +413,7 @@ subsequent_afis = {
     71: "BGP-LS",  # RFC 7752
     72: "BGP-LS-VPN",  # RFC 7752
     128: "MPLS-labeled VPN address",  # RFC 4364
-    129: "Multicast for BGP/MPLS IP Virtual Private Networks (VPNs)",  # RFC 6514
+    129: "Multicast for BGP/MPLS IP Virtual Private Networks (VPNs)",  # RFC 6514  # noqa: E501
     132: "Route Target constraint",  # RFC 4684
     133: "IPv4 dissemination of flow specification rules",  # RFC 5575
     134: "VPNv4 dissemination of flow specification rules",  # RFC 5575
@@ -416,7 +470,7 @@ class BGPHeader(Packet):
         return p + pay
 
     def guess_payload_class(self, payload):
-        return _get_cls(_bgp_cls_by_type.get(self.type, conf.raw_layer), conf.raw_layer)
+        return _get_cls(_bgp_cls_by_type.get(self.type, conf.raw_layer), conf.raw_layer)  # noqa: E501
 
 
 def _bgp_dispatcher(payload):
@@ -512,19 +566,19 @@ _capabilities = {
     3: "Outbound Route Filtering Capability",  # RFC 5291
     4: "Multiple routes to a destination capability",  # RFC 3107
     5: "Extended Next Hop Encoding",  # RFC 5549
-    6: "BGP-Extended Message",  # (TEMPORARY - registered 2015-09-30, expires 2016-09-30),
+    6: "BGP-Extended Message",  # (TEMPORARY - registered 2015-09-30, expires 2016-09-30),  # noqa: E501
     # draft-ietf-idr-bgp-extended-messages
     64: "Graceful Restart Capability",  # RFC 4724
     65: "Support for 4-octet AS number capability",  # RFC 6793
     66: "Deprecated (2003-03-06)",
-    67: "Support for Dynamic Capability (capability specific)",  # draft-ietf-idr-dynamic-cap
+    67: "Support for Dynamic Capability (capability specific)",  # draft-ietf-idr-dynamic-cap  # noqa: E501
     68: "Multisession BGP Capability",  # draft-ietf-idr-bgp-multisession
     69: "ADD-PATH Capability",  # RFC-ietf-idr-add-paths-15
     70: "Enhanced Route Refresh Capability",  # RFC 7313
-    71: "Long-Lived Graceful Restart (LLGR) Capability",  # draft-uttaro-idr-bgp-persistence
+    71: "Long-Lived Graceful Restart (LLGR) Capability",  # draft-uttaro-idr-bgp-persistence  # noqa: E501
     73: "FQDN Capability",  # draft-walton-bgp-hostname-capability
-    128: "Route Refresh Capability for BGP-4 (Cisco)",  # Cisco also uses 128 for RR capability
-    130: "Outbound Route Filtering Capability (Cisco)",  # Cisco also uses 130 for ORF capability
+    128: "Route Refresh Capability for BGP-4 (Cisco)",  # Cisco also uses 128 for RR capability  # noqa: E501
+    130: "Outbound Route Filtering Capability (Cisco)",  # Cisco also uses 130 for ORF capability  # noqa: E501
 }
 
 
@@ -575,11 +629,11 @@ class _BGPCap_metaclass(type):
         return newclass
 
 
-class _BGPCapability_metaclass(Packet_metaclass, _BGPCap_metaclass):
+class _BGPCapability_metaclass(_BGPCap_metaclass, Packet_metaclass):
     pass
 
 
-class BGPCapability(six.with_metaclass(_BGPCapability_metaclass, Packet)):
+class BGPCapability(Packet, metaclass=_BGPCapability_metaclass):
     """
     Generic BGP capability.
     """
@@ -603,28 +657,13 @@ class BGPCapability(six.with_metaclass(_BGPCapability_metaclass, Packet)):
             raise _BGPInvalidDataException(err)
         return s
 
-    # Every BGP capability object inherits from BGPCapability.
-    def haslayer(self, cls):
-        if cls == "BGPCapability":
-            if isinstance(self, BGPCapability):
-                return True
-        if issubclass(cls, BGPCapability):
-            if isinstance(self, cls):
-                return True
-        return super(BGPCapability, self).haslayer(cls)
-
-    def getlayer(self, cls, nb=1, _track=None, _subclass=True, **flt):
-        return super(BGPCapability, self).getlayer(
-            cls, nb=nb, _track=_track, _subclass=True, **flt
-        )
-
     def post_build(self, p, pay):
         length = 0
         if self.length is None:
             # capability packet length - capability code (1 byte) -
             # capability length (1 byte)
             length = len(p) - 2
-            p = chb(p[0]) + chb(length) + p[2:]
+            p = p[:1] + chb(length) + p[2:]
         return p + pay
 
 
@@ -634,17 +673,12 @@ class BGPCapGeneric(BGPCapability):
     """
 
     name = "BGP Capability"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 0, _capabilities),
-        ByteField("length", 0),
-        ConditionalField(
-            StrLenField(
-                "cap_data",
-                '',
-                length_from=lambda p: p.length
-            ),
-            lambda p: p.length > 0
-        )
+        FieldLenField("length", None, fmt="B", length_of="cap_data"),
+        StrLenField("cap_data", '',
+                    length_from=lambda p: p.length, max_length=255),
     ]
 
 
@@ -660,6 +694,7 @@ class BGPCapMultiprotocol(BGPCapability):
     """
 
     name = "Multiprotocol Extensions for BGP-4"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 1, _capabilities),
         ByteField("length", 4),
@@ -727,7 +762,7 @@ class BGPCapORFBlock(Packet):
     def post_build(self, p, pay):
         count = None
         if self.orf_number is None:
-            count = len(self.entries)  # orf_type (1 byte) + send_receive (1 byte)
+            count = len(self.entries)  # orf_type (1 byte) + send_receive (1 byte)  # noqa: E501
             p = p[:4] + struct.pack("!B", count) + p[5:]
         return p + pay
 
@@ -768,6 +803,7 @@ class BGPCapORF(BGPCapability):
     """
 
     name = "Outbound Route Filtering Capability"
+    match_subclass = True
     fields_desc = [
         ByteEnumField("code", 3, _capabilities),
         ByteField("length", None),
@@ -805,6 +841,7 @@ class BGPCapGracefulRestart(BGPCapability):
                        ByteEnumField("flags", 0, gr_address_family_flags)]
 
     name = "Graceful Restart Capability"
+    match_subclass = True
     fields_desc = [ByteEnumField("code", 64, _capabilities),
                    ByteField("length", None),
                    BitField("restart_flags", 0, 4),
@@ -824,6 +861,7 @@ class BGPCapFourBytesASN(BGPCapability):
     """
 
     name = "Support for 4-octet AS number capability"
+    match_subclass = True
     fields_desc = [ByteEnumField("code", 65, _capabilities),
                    ByteField("length", 4),
                    IntField("asn", 0)]
@@ -915,9 +953,9 @@ class BGPOptParam(Packet):
             else:
                 length = len(p) - \
                     2  # parameter type (1 byte) - parameter length (1 byte)
-            packet = chb(p[0]) + chb(length)
+            packet = p[:1] + chb(length)
             if (self.param_type == 2 and self.param_value is not None) or\
-                    (self.param_type == 1 and self.authentication_data is not None):
+                    (self.param_type == 1 and self.authentication_data is not None):  # noqa: E501
                 packet = packet + p[2:]
 
         return packet + pay
@@ -992,7 +1030,7 @@ path_attributes = {
     16: "EXTENDED COMMUNITIES",  # RFC 4360
     17: "AS4_PATH",  # RFC 6793
     18: "AS4_AGGREGATOR",  # RFC 6793
-    19: "SAFI Specific Attribute (SSA) (deprecated)",  # draft-kapoor-nalawade-idr-bgp-ssa-00,
+    19: "SAFI Specific Attribute (SSA) (deprecated)",  # draft-kapoor-nalawade-idr-bgp-ssa-00,  # noqa: E501
     # draft-nalawade-idr-mdt-safi-00, draft-wijnands-mt-discovery-00
     20: "Connector Attribute (deprecated)",  # RFC 6037
     21: "AS_PATHLIMIT (deprecated)",  # draft-ietf-idr-as-pathlimit
@@ -1002,9 +1040,10 @@ path_attributes = {
     25: "IPv6 Address Specific Extended Community",  # RFC 5701
     26: "AIGP",  # RFC 7311
     27: "PE Distinguisher Labels",  # RFC 6514
-    28: "BGP Entropy Label Capability Attribute (deprecated)",  # RFC 6790, RFC 7447
+    28: "BGP Entropy Label Capability Attribute (deprecated)",  # RFC 6790, RFC 7447  # noqa: E501
     29: "BGP-LS Attribute",  # RFC 7752
-    40: "BGP Prefix-SID",  # (TEMPORARY - registered 2015-09-30, expires 2016-09-30)
+    32: "LARGE_COMMUNITY",  # RFC 8092, RFC 8195
+    40: "BGP Prefix-SID",  # (TEMPORARY - registered 2015-09-30, expires 2016-09-30)  # noqa: E501
     # draft-ietf-idr-bgp-prefix-sid
     128: "ATTR_SET",  # RFC 6368
     255: "Reserved for development"
@@ -1041,6 +1080,7 @@ attributes_flags = {
     27: 0xc0,   # PE Distinguisher Labels (RFC 6514)
     28: 0xc0,   # BGP Entropy Label Capability Attribute
     29: 0x80,   # BGP-LS Attribute
+    32: 0xc0,   # LARGE_COMMUNITY
     40: 0xc0,   # BGP Prefix-SID
     128: 0xc0   # ATTR_SET (RFC 6368)
 }
@@ -1165,7 +1205,7 @@ class BGPPAASPath(Packet):
             segment_len = self.segment_length
             if segment_len is None:
                 segment_len = len(self.segment_value)
-                p = chb(p[0]) + chb(segment_len) + p[2:]
+                p = p[:1] + chb(segment_len) + p[2:]
 
             return p + pay
 
@@ -1194,7 +1234,7 @@ class BGPPAAS4BytesPath(Packet):
             segment_len = self.segment_length
             if segment_len is None:
                 segment_len = len(self.segment_value)
-                p = chb(p[0]) + chb(segment_len) + p[2:]
+                p = p[:1] + chb(segment_len) + p[2:]
 
             return p + pay
 
@@ -1349,18 +1389,18 @@ _ext_comm_types = {
     0x05: "CoS Capability",  # Thomas_Martin_Knoll
     0x06: "EVPN",  # RFC 7153
     0x07: "Unassigned",
-    0x08: "Flow spec redirect/mirror to IP next-hop",  # draft-simpson-idr-flowspec-redirect
+    0x08: "Flow spec redirect/mirror to IP next-hop",  # draft-simpson-idr-flowspec-redirect  # noqa: E501
 
     # BGP Non-Transitive Extended Community Types
-    0x40: "Non-Transitive Two-Octet AS-Specific Extended Community",  # RFC 7153
-    0x41: "Non-Transitive IPv4-Address-Specific Extended Community",  # RFC 7153
-    0x42: "Non-Transitive Four-Octet AS-Specific Extended Community",  # RFC 7153
+    0x40: "Non-Transitive Two-Octet AS-Specific Extended Community",  # RFC 7153  # noqa: E501
+    0x41: "Non-Transitive IPv4-Address-Specific Extended Community",  # RFC 7153  # noqa: E501
+    0x42: "Non-Transitive Four-Octet AS-Specific Extended Community",  # RFC 7153  # noqa: E501
     0x43: "Non-Transitive Opaque Extended Community",  # RFC 7153
     0x44: "QoS Marking",  # Thomas_Martin_Knoll
 
     0x80: "Generic Transitive Experimental Use Extended Community",  # RFC 7153
-    0x81: "Generic Transitive Experimental Use Extended Community Part 2",  # RFC 7674
-    0x82: "Generic Transitive Experimental Use Extended Community Part 3",  # RFC 7674
+    0x81: "Generic Transitive Experimental Use Extended Community Part 2",  # RFC 7674  # noqa: E501
+    0x82: "Generic Transitive Experimental Use Extended Community Part 3",  # RFC 7674  # noqa: E501
 }
 
 # EVPN Extended Community Sub-Types
@@ -1373,7 +1413,7 @@ _ext_comm_evpn_subtypes = {
     0x04: "Layer 2 Extended Community",  # draft-ietf-bess-evpn-vpws
     0x05: "E-TREE Extended Community",  # draft-ietf-bess-evpn-etree
     0x06: "DF Election Extended Community",  # draft-ietf-bess-evpn-df-election
-    0x07: "I-SID Extended Community",  # draft-sajassi-bess-evpn-virtual-eth-segment
+    0x07: "I-SID Extended Community",  # draft-sajassi-bess-evpn-virtual-eth-segment  # noqa: E501
 }
 
 # Transitive Two-Octet AS-Specific Extended Community Sub-Types
@@ -1390,7 +1430,7 @@ _ext_comm_trans_two_octets_as_specific_subtypes = {
 
 # Non-Transitive Two-Octet AS-Specific Extended Community Sub-Types
 _ext_comm_non_trans_two_octets_as_specific_subtypes = {
-    0x04: "Link Bandwidth Extended Community",  # draft-ietf-idr-link-bandwidth-00
+    0x04: "Link Bandwidth Extended Community",  # draft-ietf-idr-link-bandwidth-00  # noqa: E501
     0x80: "Virtual-Network Identifier Extended Community",
     # draft-drao-bgp-l3vpn-virtual-network-overlays
 }
@@ -1445,7 +1485,7 @@ _ext_comm_trans_opaque_subtypes = {
 
 # Non-Transitive Opaque Extended Community Sub-Types
 _ext_comm_non_trans_opaque_subtypes = {
-    0x00: "BGP Origin Validation State",  # draft-ietf-sidr-origin-validation-signaling
+    0x00: "BGP Origin Validation State",  # draft-ietf-sidr-origin-validation-signaling  # noqa: E501
     0x01: "Cost Community",  # draft-ietf-idr-custom-decision
 }
 
@@ -1484,7 +1524,7 @@ _ext_comm_trans_ipv6_addr_specific_types = {
     0x0003: "Route Origin",  # RFC 5701
     0x0004: "OSPFv3 Route Attributes (DEPRECATED)",  # RFC 6565
     0x000b: "VRF Route Import",  # RFC 6515, RFC 6514
-    0x000c: "Flow-spec Redirect to IPv6",  # draft-ietf-idr-flowspec-redirect-ip
+    0x000c: "Flow-spec Redirect to IPv6",  # draft-ietf-idr-flowspec-redirect-ip  # noqa: E501
     0x0010: "Cisco VPN-Distinguisher",  # Eric_Rosen
     0x0011: "UUID-based Route Target",  # Dhananjaya_Rao
     0x0012: "Inter-Area P2MP Segmented Next-Hop",  # RFC 7524
@@ -1523,7 +1563,7 @@ class BGPPAExtCommTwoOctetASSpecific(Packet):
 
     name = "Two-Octet AS Specific Extended Community"
     fields_desc = [
-        ShortField("global_administrator", 0), IntField("local_administrator", 0)]
+        ShortField("global_administrator", 0), IntField("local_administrator", 0)]  # noqa: E501
 
 
 class BGPPAExtCommFourOctetASSpecific(Packet):
@@ -1535,7 +1575,7 @@ class BGPPAExtCommFourOctetASSpecific(Packet):
 
     name = "Four-Octet AS Specific Extended Community"
     fields_desc = [
-        IntField("global_administrator", 0), ShortField("local_administrator", 0)]
+        IntField("global_administrator", 0), ShortField("local_administrator", 0)]  # noqa: E501
 
 
 class BGPPAExtCommIPv4AddressSpecific(Packet):
@@ -1547,7 +1587,7 @@ class BGPPAExtCommIPv4AddressSpecific(Packet):
 
     name = "IPv4 Address Specific Extended Community"
     fields_desc = [
-        IntField("global_administrator", 0), ShortField("local_administrator", 0)]
+        IntField("global_administrator", 0), ShortField("local_administrator", 0)]  # noqa: E501
 
 
 class BGPPAExtCommOpaque(Packet):
@@ -1645,6 +1685,20 @@ class BGPPAExtCommTrafficMarking(Packet):
     ]
 
 
+_ext_high_low_dict = {
+    BGPPAExtCommTwoOctetASSpecific: (0x00, 0x00),
+    BGPPAExtCommIPv4AddressSpecific: (0x01, 0x00),
+    BGPPAExtCommFourOctetASSpecific: (0x02, 0x00),
+    BGPPAExtCommOpaque: (0x03, 0x00),
+    BGPPAExtCommTrafficRate: (0x80, 0x06),
+    BGPPAExtCommTrafficAction: (0x80, 0x07),
+    BGPPAExtCommRedirectAS2Byte: (0x80, 0x08),
+    BGPPAExtCommTrafficMarking: (0x80, 0x09),
+    BGPPAExtCommRedirectIPv4: (0x81, 0x08),
+    BGPPAExtCommRedirectAS4Byte: (0x82, 0x08),
+}
+
+
 class _ExtCommValuePacketField(PacketField):
     """
     PacketField handling Extended Communities "value parts".
@@ -1652,8 +1706,8 @@ class _ExtCommValuePacketField(PacketField):
 
     __slots__ = ["type_from"]
 
-    def __init__(self, name, default, cls, remain=0, type_from=(0, 0)):
-        PacketField.__init__(self, name, default, cls, remain)
+    def __init__(self, name, default, cls, type_from=(0, 0)):
+        PacketField.__init__(self, name, default, cls)
         self.type_from = type_from
 
     def m2i(self, pkt, m):
@@ -1713,12 +1767,12 @@ class BGPPAIPv6AddressSpecificExtComm(Packet):
 
     name = "IPv6 Address Specific Extended Community"
     fields_desc = [
-        IP6Field("global_administrator", "::"), ShortField("local_administrator", 0)]
+        IP6Field("global_administrator", "::"), ShortField("local_administrator", 0)]  # noqa: E501
 
 
 def _get_ext_comm_subtype(type_high):
     """
-    Returns a ByteEnumField with the right sub-types dict for a given community.
+    Returns a ByteEnumField with the right sub-types dict for a given community.  # noqa: E501
     http://www.iana.org/assignments/bgp-extended-communities/bgp-extended-communities.xhtml
     """
 
@@ -1752,7 +1806,7 @@ class BGPPAExtCommunity(Packet):
         ByteEnumField("type_high", 0, _ext_comm_types),
         _TypeLowField(
             "type_low",
-            0,
+            None,
             enum_from=lambda x: _get_ext_comm_subtype(x.type_high)
         ),
         _ExtCommValuePacketField(
@@ -1766,6 +1820,9 @@ class BGPPAExtCommunity(Packet):
     def post_build(self, p, pay):
         if self.value is None:
             p = p[:2]
+        if self.type_low is None and self.value is not None:
+            high, low = _ext_high_low_dict.get(self.value.__class__, (0x00, 0x00))  # noqa: E501
+            p = chb(high) + chb(low) + p[2:]
         return p + pay
 
 
@@ -1823,7 +1880,7 @@ class MPReachNLRIPacketListField(PacketListField):
                     length_in_bytes = (mask + 7) // 8
                     current = remain[:length_in_bytes + 1]
                     remain = remain[length_in_bytes + 1:]
-                    prefix = BGPNLRI_IPv6(current)
+                    prefix = self.m2i(pkt, current)
                     lst.append(prefix)
 
         return remain, lst
@@ -1850,7 +1907,7 @@ class BGPPAMPReachNLRI(Packet):
         ConditionalField(IP6Field("nh_v6_link_local", "::"),
                          lambda x: x.afi == 2 and x.nh_addr_len == 32),
         ByteField("reserved", 0),
-        MPReachNLRIPacketListField("nlri", [], Packet)]
+        MPReachNLRIPacketListField("nlri", [], BGPNLRI_IPv6)]
 
     def post_build(self, p, pay):
         if self.nlri is None:
@@ -1869,8 +1926,7 @@ class BGPPAMPUnreachNLRI_IPv6(Packet):
     """
 
     name = "MP_UNREACH_NLRI (IPv6 NLRI)"
-    fields_desc = [BGPNLRIPacketListField(
-        "withdrawn_routes", [], BGPNLRI_IPv6)]
+    fields_desc = [BGPNLRIPacketListField("withdrawn_routes", [], "IPv6")]
 
 
 class MPUnreachNLRIPacketField(PacketField):
@@ -1933,14 +1989,41 @@ class BGPPAAS4Path(Packet):
     def post_build(self, p, pay):
         if self.segment_length is None:
             segment_len = len(self.segment_value)
-            p = chb(p[0]) + chb(segment_len) + p[2:]
+            p = p[:1] + chb(segment_len) + p[2:]
 
         return p + pay
 
 
 #
+# LARGE_COMMUNITY
+#
+
+class BGPLargeCommunitySegment(Packet):
+    """
+    Provides an implementation for LARGE_COMMUNITY segments
+    which holds 3*4 bytes integers.
+    """
+
+    fields_desc = [
+        IntField("global_administrator", None),
+        IntField("local_data_part1", None),
+        IntField("local_data_part2", None)
+    ]
+
+
+class BGPPALargeCommunity(Packet):
+    """
+    Provides an implementation of the LARGE_COMMUNITY attribute.
+    References: RFC 8092, RFC 8195
+    """
+
+    name = "LARGE_COMMUNITY"
+    fields_desc = [PacketListField("segments", [], BGPLargeCommunitySegment)]
+
+#
 # AS4_AGGREGATOR
 #
+
 
 class BGPPAAS4Aggregator(Packet):
     """
@@ -1956,7 +2039,7 @@ class BGPPAAS4Aggregator(Packet):
 
 _path_attr_objects = {
     0x01: "BGPPAOrigin",
-    0x02: "BGPPAASPath",  # if bgp_module_conf.use_2_bytes_asn, BGPPAAS4BytesPath otherwise
+    0x02: "BGPPAASPath",  # if bgp_module_conf.use_2_bytes_asn, BGPPAAS4BytesPath otherwise  # noqa: E501
     0x03: "BGPPANextHop",
     0x04: "BGPPAMultiExitDisc",
     0x05: "BGPPALocalPref",
@@ -1969,7 +2052,8 @@ _path_attr_objects = {
     0x0F: "BGPPAMPUnreachNLRI",
     0x10: "BGPPAExtComms",
     0x11: "BGPPAAS4Path",
-    0x19: "BGPPAIPv6AddressSpecificExtComm"
+    0x19: "BGPPAIPv6AddressSpecificExtComm",
+    0x20: "BGPPALargeCommunity"
 }
 
 
@@ -1986,14 +2070,16 @@ class _PathAttrPacketField(PacketField):
         if type_code == 0 or type_code == 255:
             ret = conf.raw_layer(m)
         # Unassigned
-        elif (type_code >= 30 and type_code <= 39) or\
+        elif (type_code >= 33 and type_code <= 39) or\
             (type_code >= 41 and type_code <= 127) or\
-            (type_code >= 129 and type_code <= 254):
+                (type_code >= 129 and type_code <= 254):
             ret = conf.raw_layer(m)
         # Known path attributes
         else:
             if type_code == 0x02 and not bgp_module_conf.use_2_bytes_asn:
                 ret = BGPPAAS4BytesPath(m)
+            elif type_code == 0x20:
+                ret = BGPPALargeCommunity(m)
             else:
                 ret = _get_cls(
                     _path_attr_objects.get(type_code, conf.raw_layer))(m)
@@ -2022,13 +2108,13 @@ class BGPPathAttr(Packet):
         ByteEnumField("type_code", 0, path_attributes),
         ConditionalField(
             ShortField("attr_ext_len", None),
-            lambda x: x.type_flags != None and\
-                has_extended_length(x.type_flags)
+            lambda x: x.type_flags is not None and
+            has_extended_length(x.type_flags)
         ),
         ConditionalField(
             ByteField("attr_len", None),
-            lambda x: x.type_flags != None and not\
-                has_extended_length(x.type_flags)
+            lambda x: x.type_flags is not None and not
+            has_extended_length(x.type_flags)
         ),
         _PathAttrPacketField("attribute", None, Packet)
     ]
@@ -2082,10 +2168,10 @@ class BGPPathAttr(Packet):
 
         # Append the rest of the message
         if extended_length:
-            if self.attribute != None:
+            if self.attribute is not None:
                 packet = packet + p[4:]
         else:
-            if self.attribute != None:
+            if self.attribute is not None:
                 packet = packet + p[3:]
 
         return packet + pay
@@ -2112,7 +2198,7 @@ class BGPUpdate(BGP):
         BGPNLRIPacketListField(
             "withdrawn_routes",
             [],
-            BGPNLRI_IPv4,
+            "IPv4",
             length_from=lambda p: p.withdrawn_routes_len
         ),
         FieldLenField(
@@ -2127,7 +2213,7 @@ class BGPUpdate(BGP):
             BGPPathAttr,
             length_from=lambda p: p.path_attr_len
         ),
-        BGPNLRIPacketListField("nlri", [], BGPNLRI_IPv4)
+        BGPNLRIPacketListField("nlri", [], "IPv4")
     ]
 
     def post_build(self, p, pay):
@@ -2136,6 +2222,8 @@ class BGPUpdate(BGP):
         if self.withdrawn_routes_len is None:
             wl = sum(map(subpacklen, self.withdrawn_routes))
             packet = p[:0] + struct.pack("!H", wl) + p[2:]
+        else:
+            wl = self.withdrawn_routes_len
         if self.path_attr_len is None:
             length = sum(map(subpacklen, self.path_attr))
             packet = p[:2 + wl] + struct.pack("!H", length) + p[4 + wl:]
@@ -2307,7 +2395,7 @@ class BGPORFEntry(Packet):
     Provides an implementation of an ORF entry.
     References: RFC 5291
     """
-
+    __slots__ = ["afi", "safi"]
     name = "ORF entry"
     fields_desc = [
         BitEnumField("action", 0, 2, _orf_actions),
@@ -2315,6 +2403,11 @@ class BGPORFEntry(Packet):
         BitField("reserved", 0, 5),
         StrField("value", "")
     ]
+
+    def __init__(self, *args, **kwargs):
+        self.afi = kwargs.pop("afi", 1)
+        self.safi = kwargs.pop("safi", 1)
+        super(BGPORFEntry, self).__init__(*args, **kwargs)
 
 
 class _ORFNLRIPacketField(PacketField):
@@ -2325,11 +2418,11 @@ class _ORFNLRIPacketField(PacketField):
     def m2i(self, pkt, m):
         ret = None
 
-        if _orf_entry_afi == 1:
+        if pkt.afi == 1:
             # IPv4
             ret = BGPNLRI_IPv4(m)
 
-        elif _orf_entry_afi == 2:
+        elif pkt.afi == 2:
             # IPv6
             ret = BGPNLRI_IPv6(m)
 
@@ -2343,7 +2436,6 @@ class BGPORFAddressPrefix(BGPORFEntry):
     """
     Provides an implementation of the Address Prefix ORF (RFC 5292).
     """
-
     name = "Address Prefix ORF"
     fields_desc = [
         BitEnumField("action", 0, 2, _orf_actions),
@@ -2356,11 +2448,10 @@ class BGPORFAddressPrefix(BGPORFEntry):
     ]
 
 
-class BGPORFCoveringPrefix(Packet):
+class BGPORFCoveringPrefix(BGPORFEntry):
     """
     Provides an implementation of the CP-ORF (RFC 7543).
     """
-
     name = "CP-ORF"
     fields_desc = [
         BitEnumField("action", 0, 2, _orf_actions),
@@ -2384,12 +2475,19 @@ class BGPORFEntryPacketListField(PacketListField):
     def m2i(self, pkt, m):
         ret = None
 
+        if isinstance(pkt.underlayer, BGPRouteRefresh):
+            afi = pkt.underlayer.afi
+            safi = pkt.underlayer.safi
+        else:
+            afi = 1
+            safi = 1
+
         # Cisco also uses 128
         if pkt.orf_type == 64 or pkt.orf_type == 128:
-            ret = BGPORFAddressPrefix(m)
+            ret = BGPORFAddressPrefix(m, afi=afi, safi=safi)
 
         elif pkt.orf_type == 65:
-            ret = BGPORFCoveringPrefix(m)
+            ret = BGPORFCoveringPrefix(m, afi=afi, safi=safi)
 
         else:
             ret = conf.raw_layer(m)
@@ -2399,14 +2497,17 @@ class BGPORFEntryPacketListField(PacketListField):
     def getfield(self, pkt, s):
         lst = []
         length = 0
+        ret = b""
         if self.length_from is not None:
             length = self.length_from(pkt)
         remain = s
+        if length <= 0:
+            return s, []
         if length is not None:
             remain, ret = s[:length], s[length:]
 
         while remain:
-            orf_len = 0
+            orf_len = length
 
             # Get value length, depending on the ORF type
             if pkt.orf_type == 64 or pkt.orf_type == 128:
@@ -2422,20 +2523,20 @@ class BGPORFEntryPacketListField(PacketListField):
             elif pkt.orf_type == 65:
                 # Covering Prefix ORF
 
-                if _orf_entry_afi == 1:
+                if pkt.afi == 1:
                     # IPv4
-                    # sequence (4 bytes) + min_len (1 byte) + max_len (1 byte) +
+                    # sequence (4 bytes) + min_len (1 byte) + max_len (1 byte) +  # noqa: E501
                     # rt (8 bytes) + import_rt (8 bytes) + route_type (1 byte)
                     orf_len = 23 + 4
 
-                elif _orf_entry_afi == 2:
+                elif pkt.afi == 2:
                     # IPv6
-                    # sequence (4 bytes) + min_len (1 byte) + max_len (1 byte) +
+                    # sequence (4 bytes) + min_len (1 byte) + max_len (1 byte) +  # noqa: E501
                     # rt (8 bytes) + import_rt (8 bytes) + route_type (1 byte)
                     orf_len = 23 + 16
 
-                elif _orf_entry_afi == 25:
-                    # sequence (4 bytes) + min_len (1 byte) + max_len (1 byte) +
+                elif pkt.afi == 25:
+                    # sequence (4 bytes) + min_len (1 byte) + max_len (1 byte) +  # noqa: E501
                     # rt (8 bytes) + import_rt (8 bytes)
                     route_type = orb(remain[22])
 
@@ -2495,10 +2596,11 @@ class BGPRouteRefresh(BGP):
         ShortEnumField("afi", 1, address_family_identifiers),
         ByteEnumField("subtype", 0, rr_message_subtypes),
         ByteEnumField("safi", 1, subsequent_afis),
-        PacketField(
-            'orf_data',
-            "", BGPORF,
-            lambda p: _update_orf_afi_safi(p.afi, p.safi)
+        ConditionalField(
+            PacketField('orf_data', "", BGPORF),
+            lambda p: (
+                (p.underlayer and p.underlayer.len or 24) > 23
+            )
         )
     ]
 
@@ -2518,4 +2620,3 @@ bind_layers(BGPHeader, BGPRouteRefresh, {"type": 5})
 # When loading the module, display the current module configuration.
 log_runtime.warning(
     "[bgp.py] use_2_bytes_asn: %s", bgp_module_conf.use_2_bytes_asn)
-

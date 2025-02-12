@@ -1,4 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# This file is part of Scapy
+# See https://scapy.net/ for more information
+
 """Module implementing Krack Attack on client, as a custom WPA Access Point
+
+Requires the python cryptography package v1.7+. See https://cryptography.io/
 
 More details on the attack can be found on https://www.krackattacks.com/
 
@@ -16,7 +22,7 @@ passphrase.
 The output logs will indicate if one of the vulnerability have been triggered.
 
 Outputs for vulnerable devices:
-- IV re-use!! Client seems to be vulnerable to handshake 3/4 replay
+- IV reuse!! Client seems to be vulnerable to handshake 3/4 replay
   (CVE-2017-13077)
 - Broadcast packet accepted twice!! (CVE-2017-13080)
 - Client has installed an all zero encryption key (TK)!!
@@ -25,4 +31,10 @@ For patched devices:
 - Client is likely not vulnerable to CVE-2017-13080
 """
 
-from scapy.modules.krack.automaton import KrackAP
+from scapy.config import conf
+
+if conf.crypto_valid:
+    from scapy.modules.krack.automaton import KrackAP  # noqa: F401
+else:
+    raise ImportError("Cannot import Krack module due to missing dependency. "
+                      "Please install python{3}-cryptography v1.7+.")

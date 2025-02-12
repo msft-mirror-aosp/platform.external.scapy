@@ -1,100 +1,89 @@
 #! /usr/bin/env python
 
 """
-Distutils setup file for Scapy.
+Setuptools setup file for Scapy.
 """
 
-
-from distutils import archive_util
-from distutils import sysconfig
-from distutils.core import setup
-from distutils.command.sdist import sdist
+import io
 import os
+import sys
+
+if sys.version_info[0] <= 2:
+    raise OSError("Scapy no longer supports Python 2 ! Please use Scapy 2.5.0")
+
+try:
+    from setuptools import setup
+    from setuptools.command.sdist import sdist
+    from setuptools.command.build_py import build_py
+except:
+    raise ImportError("setuptools is required to install scapy !")
 
 
-EZIP_HEADER = """#! /bin/sh
-PYTHONPATH=$0/%s exec python -m scapy.__init__
-"""
+def get_long_description():
+    """
+    Extract description from README.md, for PyPI's usage
+    """
+    def process_ignore_tags(buffer):
+        return "\n".join(
+            x for x in buffer.split("\n") if "<!-- ignore_ppi -->" not in x
+        )
+    try:
+        fpath = os.path.join(os.path.dirname(__file__), "README.md")
+        with io.open(fpath, encoding="utf-8") as f:
+            readme = f.read()
+            desc = readme.partition("<!-- start_ppi_description -->")[2]
+            desc = desc.partition("<!-- stop_ppi_description -->")[0]
+            return process_ignore_tags(desc.strip())
+    except IOError:
+        return None
 
 
-def make_ezipfile(base_name, base_dir, verbose=0, dry_run=0, **kwargs):
-    fname = archive_util.make_zipfile(base_name, base_dir, verbose, dry_run)
-    ofname = fname + ".old"
-    os.rename(fname, ofname)
-    of = open(ofname)
-    f = open(fname, "w")
-    f.write(EZIP_HEADER % base_dir)
-    while True:
-        data = of.read(8192)
-        if not data:
-            break
-        f.write(data)
-    f.close()
-    os.system("zip -A '%s'" % fname)
-    of.close()
-    os.unlink(ofname)
-    os.chmod(fname, 0o755)
-    return fname
+# Note: why do we bother including a 'scapy/VERSION' file and doing our
+# own versioning stuff, instead of using more standard methods?
+# Because it's all garbage.
+
+# If you remain fully standard, there's no way
+# of adding the version dynamically, even less when using archives
+# (currently, we're able to add the version anytime someone exports Scapy
+# on github).
+
+# If you use setuptools_scm, you'll be able to have the git tag set into
+# the wheel (therefore the metadata), that you can then retrieve using
+# importlib.metadata, BUT it breaks sdist (source packages), as those
+# don't include metadata.
 
 
-archive_util.ARCHIVE_FORMATS["ezip"] = (
-    make_ezipfile, [], 'Executable ZIP file')
+def _build_version(path):
+    """
+    This adds the scapy/VERSION file when creating a sdist and a wheel
+    """
+    fn = os.path.join(path, 'scapy', 'VERSION')
+    with open(fn, 'w') as f:
+        f.write(__import__('scapy').VERSION)
 
-SCRIPTS = ['bin/scapy', 'bin/UTscapy']
-# On Windows we also need additional batch files to run the above scripts
-if os.name == "nt":
-    SCRIPTS += ['bin/scapy.bat', 'bin/UTscapy.bat']
+
+class SDist(sdist):
+    """
+    Modified sdist to create scapy/VERSION file
+    """
+    def make_release_tree(self, base_dir, *args, **kwargs):
+        super(SDist, self).make_release_tree(base_dir, *args, **kwargs)
+        # ensure there's a scapy/VERSION file
+        _build_version(base_dir)
+
+
+class BuildPy(build_py):
+    """
+    Modified build_py to create scapy/VERSION file
+    """
+    def build_package_data(self):
+        super(BuildPy, self).build_package_data()
+        # ensure there's a scapy/VERSION file
+        _build_version(self.build_lib)
 
 setup(
-    name='scapy',
-    version=__import__('scapy').VERSION,
-    packages=[
-        'scapy',
-        'scapy/arch',
-        'scapy/arch/bpf',
-        'scapy/arch/windows',
-        'scapy/contrib',
-        'scapy/layers',
-        'scapy/layers/tls',
-        'scapy/layers/tls/crypto',
-        'scapy/modules',
-        'scapy/modules/krack',
-        'scapy/asn1',
-        'scapy/tools',
-    ],
-    scripts=SCRIPTS,
-    data_files=[('share/man/man1', ["doc/scapy.1.gz"])],
-    package_data={
-        'scapy': ['VERSION'],
-    },
-
-    # Metadata
-    author='Philippe BIONDI',
-    author_email='phil(at)secdev.org',
-    maintainer='Pierre LALET, Guillaume VALADON',
-    description='Scapy: interactive packet manipulation tool',
-    license='GPLv2',
-    url='http://www.secdev.org/projects/scapy',
-    download_url='https://github.com/secdev/scapy/tarball/master',
-    keywords=["network"],
-    classifiers=[
-        "Development Status :: 5 - Production/Stable",
-        "Environment :: Console",
-        "Intended Audience :: Developers",
-        "Intended Audience :: Information Technology",
-        "Intended Audience :: Science/Research",
-        "Intended Audience :: System Administrators",
-        "Intended Audience :: Telecommunications Industry",
-        "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
-        "Programming Language :: Python :: 2",
-        "Programming Language :: Python :: 2.7",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.3",
-        "Programming Language :: Python :: 3.4",
-        "Programming Language :: Python :: 3.5",
-        "Programming Language :: Python :: 3.6",
-        "Topic :: Security",
-        "Topic :: System :: Networking",
-        "Topic :: System :: Networking :: Monitoring",
-    ]
+    cmdclass={'sdist': SDist, 'build_py': BuildPy},
+    data_files=[('share/man/man1', ["doc/scapy.1"])],
+    long_description=get_long_description(),
+    long_description_content_type='text/markdown',
 )
