@@ -11,6 +11,9 @@ name: "scapy"
 description: "Scapy is a powerful Python-based interactive packet manipulation program and library."
 third_party {
   license_type: RESTRICTED
+  security {
+    tag: "NVD-CPE2.3:cpe:/a:scapy:scapy:2.6.1"
+  }
   last_upgrade_date {
     year: 2025
     month: 2
