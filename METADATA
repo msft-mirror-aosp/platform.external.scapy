@@ -22,7 +22,7 @@ third_party {
   identifier {
     type: "Git"
     value: "https://github.com/secdev/scapy"
-    version: "3aadcf5ad25d0e0e731406c7adf98440f0d4169c"
+    version: "8e08cbf759de6709a5b4af6bea3655d293129bb4"
     closest_version: "v2.6.1"
   }
 }
